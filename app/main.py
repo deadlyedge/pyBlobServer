@@ -24,6 +24,8 @@ BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
 ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
 DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
 FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
+TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
+
 FILES_INFO_FILENAME = "[files_info].json"
 USERS_INFO_FILENAME = "[users_info].json"
 
@@ -62,11 +64,6 @@ class FileInfo(BaseModel):
     upload_time: str
 
 
-# class FilesInfo(BaseModel):
-#     user: User
-#     files: list[FileInfo]
-
-
 class UserInfo(User):
     files: list[FileInfo] = []
     total_size: int = 0
@@ -77,7 +74,7 @@ class UserInfo(User):
     last_download_at: Optional[str] = None
 
 
-class UserManage:
+class UserManager:
     def __init__(self):
         self.users_info_path = os.path.join(BASE_FOLDER, USERS_INFO_FILENAME)
 
@@ -112,13 +109,19 @@ class UserManage:
         except IOError as e:
             logger.error(f"Failed to save user info: {e}")
 
+    def _initial_user(self, user_id: str) -> UserInfo:
+        """Initializes a new user."""
+        new_user = UserInfo(user=user_id, token=str(uuid.uuid4()))
+        self.update_user(new_user)
+        return new_user
+
     def get_user(self, user_id: str) -> UserInfo:
         """Retrieves user information by user ID."""
         users_info = self._load_users_info()
         for user in users_info:
             if user.user == user_id:
                 return user
-        return self.initial_user(user_id)
+        return self._initial_user(user_id)
 
     def change_token(self, user_id: str) -> UserInfo:
         """Changes the token for a user."""
@@ -126,12 +129,6 @@ class UserManage:
         user.token = str(uuid.uuid4())
         self.update_user(user)
         return user
-
-    def initial_user(self, user_id: str) -> UserInfo:
-        """Initializes a new user."""
-        new_user = UserInfo(user=user_id, token=str(uuid.uuid4()))
-        self.update_user(new_user)
-        return new_user
 
     def update_user(self, user_info: UserInfo):
         """Updates user information.  If the user doesn't exist, adds them."""
@@ -148,33 +145,8 @@ class UserManage:
 
         self._save_users_info(users_info)
 
-    # def delete_user(self, user_id: str) -> bool:
-    #     """Deletes a user."""
-    #     users_info = self._load_users_info()
-    #     users_info = [user for user in users_info if user.user != user_id]
-    #     self._save_users_info(users_info)
-    #     return True  # Or return whether a user was actually deleted
-
-    # Example Usage (needs to be integrated into the main application)
-    # users_info_path = os.path.join(BASE_FOLDER, "[users_info].json")
-    # user_manager = UserManage(users_info_path)
-
-    # new_user = UserInfo(user="testuser", token="testtoken", files=[], total_size=0, total_uploads=0, total_downloads=0)
-    # user_manager.update_user(new_user)
-
-    # retrieved_user = user_manager.get_user("testuser")
-    # print(retrieved_user)
-
-    # user_manager.delete_user("testuser")
 
     def api_token_auth(self, token):
-        # users_info_path = f"{BASE_FOLDER}/[users_info].json"
-        # if not os.path.exists(users_info_path):
-        #     raise HTTPException(
-        #         status_code=status.HTTP_401_UNAUTHORIZED, detail="Users Info Not Found"
-        #     )
-        # with open(self.users_info_path, "r") as f:
-        #     users_info = json.load(f)
         # 检查token是否在users_info中
         for user_info in self._load_users_info():
             if user_info.token == token:
@@ -185,7 +157,7 @@ class UserManage:
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    return UserManage().api_token_auth(token)
+    return UserManager().api_token_auth(token)
 
 
 class FileStorage:
@@ -315,9 +287,9 @@ async def get_user(user_id: str, f: str = ""):
 
     match f:
         case "change_token":
-            return JSONResponse(UserManage().change_token(user_id).model_dump())
+            return JSONResponse(UserManager().change_token(user_id).model_dump())
         case _:
-            return JSONResponse(UserManage().get_user(user_id).model_dump())
+            return JSONResponse(UserManager().get_user(user_id).model_dump())
 
 
 @app.get("/s/{file_id}")
@@ -326,6 +298,9 @@ async def get_file(
     output: str = "file",
     current_user: User = Depends(get_current_user),
 ):
+    """
+    获取文件。需要认证
+    """
     logger.info(f"user {current_user} getting.")
 
     file_storage = FileStorage(current_user.user)
@@ -375,6 +350,9 @@ async def upload_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    上传文件。需要认证
+    """
     logger.info(f"user {current_user} is here.")
 
     file_storage = FileStorage(current_user.user)
@@ -396,6 +374,9 @@ async def upload_file(
 
 @app.get("/list")
 async def list_files(current_user: User = Depends(get_current_user)):
+    """
+    列出文件。需要认证
+    """
     file_storage = FileStorage(current_user.user)
     files_info = file_storage.get_files_info()
     return JSONResponse(files_info, status_code=200)
@@ -413,6 +394,9 @@ async def delete_file(file_id: str, current_user: User = Depends(get_current_use
 
 @app.get("/health")
 async def health():
+    """
+    健康检查
+    """
     return JSONResponse({"status": "ok"}, status_code=200)
 
 
