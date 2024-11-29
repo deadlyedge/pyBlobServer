@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 import pendulum
 import json
 import uuid
@@ -24,6 +25,7 @@ ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
 DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
 FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
 FILES_INFO_FILENAME = "[files_info].json"
+USERS_INFO_FILENAME = "[users_info].json"
 
 
 if ALLOWED_USERS == "":
@@ -50,7 +52,7 @@ class UploadResponse(BaseModel):
 
 class User(BaseModel):
     user: str
-    token: str
+    token: str | None
 
 
 class FileInfo(BaseModel):
@@ -60,38 +62,130 @@ class FileInfo(BaseModel):
     upload_time: str
 
 
-class FilesInfo(BaseModel):
-    user: User
-    files: list[FileInfo]
+# class FilesInfo(BaseModel):
+#     user: User
+#     files: list[FileInfo]
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    user = api_token_auth(token)
-    return user
+class UserInfo(User):
+    files: list[FileInfo] = []
+    total_size: int = 0
+    total_uploads: int = 0
+    total_downloads: int = 0
+    created_at: str = pendulum.now().to_iso8601_string()
+    last_upload_at: Optional[str] = None
+    last_download_at: Optional[str] = None
 
 
-def api_token_auth(token):
-    users_info_path = f"{BASE_FOLDER}/[users_info].json"
-    if not os.path.exists(users_info_path):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Users Info Not Found"
+class UserManage:
+    def __init__(self):
+        self.users_info_path = os.path.join(BASE_FOLDER, USERS_INFO_FILENAME)
+
+    def _load_users_info(self) -> list[UserInfo]:
+        """Loads user information from the JSON file.  Handles file I/O errors."""
+        if not os.path.exists(self.users_info_path):
+            return []  # Return empty list if file doesn't exist.
+
+        try:
+            with open(self.users_info_path, "r", encoding="utf-8") as f:
+                users_info_list = json.load(f)
+                return [
+                    UserInfo(**user_data) for user_data in users_info_list
+                ]  # Convert to UserInfo objects
+        except (IOError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load user info: {e}")
+            return []
+
+    def _save_users_info(self, users_info_list: list[UserInfo]):
+        """Saves user information to the JSON file. Handles file I/O errors."""
+        try:
+            os.makedirs(
+                os.path.dirname(self.users_info_path), exist_ok=True
+            )  # Ensure directory exists
+            with open(self.users_info_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    [user.model_dump() for user in users_info_list],
+                    f,
+                    indent=4,
+                    ensure_ascii=False,
+                )
+        except IOError as e:
+            logger.error(f"Failed to save user info: {e}")
+
+    def get_user(self, user_id: str) -> UserInfo:
+        """Retrieves user information by user ID."""
+        users_info = self._load_users_info()
+        for user in users_info:
+            if user.user == user_id:
+                return user
+        return self.initial_user(user_id)
+
+    def change_token(self, user_id: str) -> UserInfo:
+        """Changes the token for a user."""
+        user = self.get_user(user_id)
+        user.token = str(uuid.uuid4())
+        self.update_user(user)
+        return user
+
+    def initial_user(self, user_id: str) -> UserInfo:
+        """Initializes a new user."""
+        new_user = UserInfo(user=user_id, token=str(uuid.uuid4()))
+        self.update_user(new_user)
+        return new_user
+
+    def update_user(self, user_info: UserInfo):
+        """Updates user information.  If the user doesn't exist, adds them."""
+        users_info = self._load_users_info()
+        user_index = next(
+            (i for i, user in enumerate(users_info) if user.user == user_info.user),
+            None,
         )
-    with open(users_info_path, "r") as f:
-        users_info = json.load(f)
+
+        if user_index is not None:
+            users_info[user_index] = user_info  # Update existing user
+        else:
+            users_info.append(user_info)  # Add new user
+
+        self._save_users_info(users_info)
+
+    # def delete_user(self, user_id: str) -> bool:
+    #     """Deletes a user."""
+    #     users_info = self._load_users_info()
+    #     users_info = [user for user in users_info if user.user != user_id]
+    #     self._save_users_info(users_info)
+    #     return True  # Or return whether a user was actually deleted
+
+    # Example Usage (needs to be integrated into the main application)
+    # users_info_path = os.path.join(BASE_FOLDER, "[users_info].json")
+    # user_manager = UserManage(users_info_path)
+
+    # new_user = UserInfo(user="testuser", token="testtoken", files=[], total_size=0, total_uploads=0, total_downloads=0)
+    # user_manager.update_user(new_user)
+
+    # retrieved_user = user_manager.get_user("testuser")
+    # print(retrieved_user)
+
+    # user_manager.delete_user("testuser")
+
+    def api_token_auth(self, token):
+        # users_info_path = f"{BASE_FOLDER}/[users_info].json"
+        # if not os.path.exists(users_info_path):
+        #     raise HTTPException(
+        #         status_code=status.HTTP_401_UNAUTHORIZED, detail="Users Info Not Found"
+        #     )
+        # with open(self.users_info_path, "r") as f:
+        #     users_info = json.load(f)
         # 检查token是否在users_info中
-        for user_info in users_info:
-            if user_info["token"] == token:
-                return User(**user_info)
+        for user_info in self._load_users_info():
+            if user_info.token == token:
+                return User(user=user_info.user, token=user_info.token)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token"
         )
 
 
-# header_scheme = APIKeyHeader(name="XD_API_KEY")
-# oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-
-# 写一个类，在根目录下创建一个/file-data文件夹，如果不存在的话，然后把这个文件夹作为一个文件存储数据库，应该根据用户使用的不同的api_key来区分不同的文件夹，然后在这个文件夹下创建一个[file_info]文件，用以记录原始上传的文件信息，然后使用getRandomString作为文件名，把文件保存到这个文件夹下，然后返回这个文件的url
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    return UserManage().api_token_auth(token)
 
 
 class FileStorage:
@@ -204,7 +298,7 @@ async def root():
 
 
 @app.get("/user/{user_id}")
-async def get_user(user_id: str):
+async def get_user(user_id: str, f: str = ""):
     """Retrieves user information and generates a new API key if the user doesn't exist.
 
     Args:
@@ -219,40 +313,18 @@ async def get_user(user_id: str):
             status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed"
         )
 
-    users_info_path = os.path.join(BASE_FOLDER, "[users_info].json")
-    try:
-        with open(users_info_path, "r", encoding="utf-8") as f:
-            users_info = json.load(f)
-    except FileNotFoundError:
-        users_info = []
-
-    # Find existing user or create a new one
-    for user in users_info:
-        if user["user"] == user_id:
-            return JSONResponse({"user": user_id, "token": user["token"]})
-
-    # Generate a new API key
-    new_key = str(uuid.uuid4())
-    new_user = User(user=user_id, token=new_key)
-    users_info.append(new_user.model_dump())
-    logger.warning(f"New user: {new_user}")
-
-    try:
-        os.makedirs(BASE_FOLDER, exist_ok=True)
-        with open(users_info_path, "w", encoding="utf-8") as f:
-            json.dump(users_info, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error saving user info: {e}",
-        )
-
-    return JSONResponse(new_user.model_dump())
+    match f:
+        case "change_token":
+            return JSONResponse(UserManage().change_token(user_id).model_dump())
+        case _:
+            return JSONResponse(UserManage().get_user(user_id).model_dump())
 
 
 @app.get("/s/{file_id}")
 async def get_file(
-    file_id: str, output: str = "file", current_user: User = Depends(get_current_user)
+    file_id: str,
+    output: str = "file",
+    current_user: User = Depends(get_current_user),
 ):
     logger.info(f"user {current_user} getting.")
 
