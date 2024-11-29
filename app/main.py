@@ -2,6 +2,7 @@ import os
 import pendulum
 import json
 import uuid
+import random
 
 from fastapi import FastAPI, Request, UploadFile, File, Depends, HTTPException, status
 from fastapi.responses import (
@@ -20,8 +21,9 @@ load_dotenv()
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
 ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
-DEFAULT_SHORT_PATH_LENGTH = os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8)
+DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
 FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
+FILES_INFO_FILENAME = "[files_info].json"
 
 
 if ALLOWED_USERS == "":
@@ -94,96 +96,105 @@ def api_token_auth(token):
 
 class FileStorage:
     def __init__(self, user: str):
-        # self.user = user  # useless now
         self.folder = f"{BASE_FOLDER}/{user}"
+        self.files_info_path = os.path.join(self.folder, FILES_INFO_FILENAME)
         os.makedirs(self.folder, exist_ok=True)
 
-    def save_file(self, file: UploadFile):
-        def getRandomString(length: int):
-            import random
+    @staticmethod
+    def _get_random_string(length: int) -> str:
+        pool = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnprstuvwxyz2345678"
+        return "".join(random.choice(pool) for _ in range(length))
 
-            pool = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnprstuvwxyz2345678"
-            result_str = "".join(random.choice(pool) for i in range(length))
-            return result_str
-
+    def _validate_file_size(self, file: UploadFile):
         if file.size and file.size > FILE_SIZE_LIMIT_MB * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="File size exceeds limit",
             )
-        file_id = getRandomString(int(DEFAULT_SHORT_PATH_LENGTH))
-        file_path = os.path.join(self.folder, file_id)
-        with open(file_path, "wb") as f:
-            f.write(file.file.read())
-        self.save_file_info(file_id, file)
-        return file_id
 
-    def save_file_info(self, file_id: str, file: UploadFile):
-        files_info_list = []
+    def _get_file_path(self, file_id: str) -> str:
+        return os.path.join(self.folder, file_id)
+
+    def _write_file(self, file: UploadFile, file_path: str):
+        try:
+            with open(file_path, "wb") as f:
+                f.write(file.file.read())
+        except IOError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to write file: {e}",
+            )
+
+    def _save_file_info(self, file_id: str, file: UploadFile):
+        files_info_list = self._load_files_info()
+
         file_info = {
             "file_id": file_id,
             "file_name": file.filename,
             "file_size": file.size,
             "upload_time": pendulum.now().to_iso8601_string(),
         }
-
-        files_info_path = os.path.join(self.folder, "[files_info].json")
-        # 如果文件不存在，则创建一个空的列表
-        if os.path.exists(files_info_path):
-            with open(files_info_path, "r", encoding="utf-8") as f:
-                files_info_list = json.load(f)
-
         files_info_list.append(file_info)
-        with open(files_info_path, "w", encoding="utf-8") as f:
-            json.dump(files_info_list, f, indent=4, ensure_ascii=False)
 
-    def get_file(self, file_id: str):
-        file_path = os.path.join(self.folder, file_id)
-        if not os.path.exists(file_path):
-            return None
-        return file_path  # open(file_path, "rb")
+        self._write_files_info(files_info_list)
 
-    def get_file_info(self, file_id: str):
-        files_info_path = os.path.join(self.folder, "[files_info].json")
-        if not os.path.exists(files_info_path):
-            return None
-        with open(files_info_path, "r", encoding="utf-8") as f:
-            file_info_list = json.load(f)
-        # 遍历列表，找到file_id对应的文件信息
-        for file_info in file_info_list:
+    def _load_files_info(self) -> list:
+        if os.path.exists(self.files_info_path):
+            try:
+                with open(self.files_info_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (IOError, json.JSONDecodeError) as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to load file info: {e}",
+                )
+        return []
+
+    def _write_files_info(self, files_info_list: list):
+        try:
+            with open(self.files_info_path, "w", encoding="utf-8") as f:
+                json.dump(files_info_list, f, indent=4, ensure_ascii=False)
+        except IOError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to write file info: {e}",
+            )
+
+    def save_file(self, file: UploadFile) -> str:
+        self._validate_file_size(file)
+        file_id = self._get_random_string(DEFAULT_SHORT_PATH_LENGTH)
+        file_path = self._get_file_path(file_id)
+        self._write_file(file, file_path)
+        self._save_file_info(file_id, file)
+        return file_id
+
+    def get_file(self, file_id: str) -> str | None:
+        file_path = self._get_file_path(file_id)
+        return file_path if os.path.exists(file_path) else None
+
+    def get_file_info(self, file_id: str) -> dict | None:
+        files_info_list = self._load_files_info()
+        for file_info in files_info_list:
             if file_info["file_id"] == file_id:
                 return file_info
         return None
 
-    # 获取用户的所有文件信息
-    def get_files_info(self):
-        files_info_path = os.path.join(self.folder, "[files_info].json")
-        if not os.path.exists(files_info_path):
-            return None
-        with open(files_info_path, "r", encoding="utf-8") as f:
-            files_info_list = json.load(f)
-        return files_info_list
+    def get_files_info(self) -> list:
+        return self._load_files_info()
 
-    # 删除文件
-    def delete_file(self, file_id: str):
-        file_path = os.path.join(self.folder, file_id)
-        # 删除文件
+    def delete_file(self, file_id: str) -> bool:
+        file_path = self._get_file_path(file_id)
+
         if os.path.exists(file_path):
             os.remove(file_path)
-            # 删除文件信息
-            files_info_path = os.path.join(self.folder, "[files_info].json")
-            if os.path.exists(files_info_path):
-                with open(files_info_path, "r", encoding="utf-8") as f:
-                    files_info_list = json.load(f)
-                    # 遍历列表，找到file_id对应的文件信息
-                    for file_info in files_info_list:
-                        if file_info["file_id"] == file_id:
-                            files_info_list.remove(file_info)
-                            break
-                with open(files_info_path, "w", encoding="utf-8") as f:
-                    json.dump(files_info_list, f, indent=4, ensure_ascii=False)
-                    # 返回删除成功
-                    return True
+            files_info_list = self._load_files_info()
+            files_info_list = [
+                file_info
+                for file_info in files_info_list
+                if file_info["file_id"] != file_id
+            ]
+            self._write_files_info(files_info_list)
+            return True
         return False
 
 
@@ -244,9 +255,6 @@ async def get_file(
     file_id: str, output: str = "file", current_user: User = Depends(get_current_user)
 ):
     logger.info(f"user {current_user} getting.")
-
-    # if key not in API_KEYS:
-    #     return JSONResponse({"error": "Invalid API Key"}, status_code=401)
 
     file_storage = FileStorage(current_user.user)
     file = file_storage.get_file(file_id)
