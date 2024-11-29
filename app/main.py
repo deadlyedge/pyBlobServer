@@ -8,9 +8,8 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
-    StreamingResponse,
 )
-from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from loguru import logger
@@ -21,7 +20,6 @@ load_dotenv()
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
 ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
-# API_KEYS = os.getenv("XD_API_KEY", "")
 DEFAULT_SHORT_PATH_LENGTH = os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8)
 FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
 
@@ -95,9 +93,9 @@ def api_token_auth(token):
 
 
 class FileStorage:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.folder = f"{BASE_FOLDER}/{api_key}"
+    def __init__(self, user: str):
+        # self.user = user  # useless now
+        self.folder = f"{BASE_FOLDER}/{user}"
         os.makedirs(self.folder, exist_ok=True)
 
     def save_file(self, file: UploadFile):
@@ -156,6 +154,37 @@ class FileStorage:
             if file_info["file_id"] == file_id:
                 return file_info
         return None
+
+    # 获取用户的所有文件信息
+    def get_files_info(self):
+        files_info_path = os.path.join(self.folder, "[files_info].json")
+        if not os.path.exists(files_info_path):
+            return None
+        with open(files_info_path, "r", encoding="utf-8") as f:
+            files_info_list = json.load(f)
+        return files_info_list
+
+    # 删除文件
+    def delete_file(self, file_id: str):
+        file_path = os.path.join(self.folder, file_id)
+        # 删除文件
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            # 删除文件信息
+            files_info_path = os.path.join(self.folder, "[files_info].json")
+            if os.path.exists(files_info_path):
+                with open(files_info_path, "r", encoding="utf-8") as f:
+                    files_info_list = json.load(f)
+                    # 遍历列表，找到file_id对应的文件信息
+                    for file_info in files_info_list:
+                        if file_info["file_id"] == file_id:
+                            files_info_list.remove(file_info)
+                            break
+                with open(files_info_path, "w", encoding="utf-8") as f:
+                    json.dump(files_info_list, f, indent=4, ensure_ascii=False)
+                    # 返回删除成功
+                    return True
+        return False
 
 
 @app.get("/")
@@ -283,6 +312,28 @@ async def upload_file(
         },
         status_code=200,
     )
+
+
+@app.get("/list")
+async def list_files(current_user: User = Depends(get_current_user)):
+    file_storage = FileStorage(current_user.user)
+    files_info = file_storage.get_files_info()
+    return JSONResponse(files_info, status_code=200)
+
+
+@app.delete("/delete/{file_id}")
+async def delete_file(file_id: str, current_user: User = Depends(get_current_user)):
+    file_storage = FileStorage(current_user.user)
+    if file_storage.delete_file(file_id):
+        logger.info(f"File {file_id} deleted")
+        return JSONResponse({"message": "File deleted"}, status_code=200)
+    else:
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok"}, status_code=200)
 
 
 if __name__ == "__main__":
