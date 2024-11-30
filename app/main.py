@@ -21,36 +21,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from loguru import logger
 from dotenv import load_dotenv
-import sqlite3
+from prisma import Prisma
 
 load_dotenv()
 
+# Environment variables
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
 ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
 DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
 FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
 TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
-DATABASE_FILE = os.getenv(
-    "DATABASE_FILE", f"{os.getcwd()}/uploads/blobserver.db"
-)  # Added Database file path
 
 if not ALLOWED_USERS:
     logger.error("ALLOWED_USERS is empty, please set it in .env file")
     exit(1)
 
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     db = Prisma()
+#     await db.connect()
+#     yield db
+#     await db.disconnect()
+#     logger.info("Shutting down...")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Close the database connection on shutdown
-    file_storage = FileStorage("dummy")  # Create dummy object to access close method
-    yield
-    file_storage.close()
-    logger.info("Shutting down...")
-
-
-app = FastAPI(lifespan=lifespan)
-
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,11 +57,9 @@ app.add_middleware(
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-
 class User(BaseModel):
-    user: str
+    user_id: str
     token: str
-
 
 class FileInfo(BaseModel):
     file_id: str
@@ -74,126 +67,57 @@ class FileInfo(BaseModel):
     file_size: int
     upload_time: str
 
-
-# No longer needed since we use SQLite
-# class UserInfo(User):
-#     files: List[FileInfo] = []
-#     total_size: int = 0
-#     total_uploads: int = 0
-#     total_downloads: int = 0
-#     created_at: str = pendulum.now().to_iso8601_string()
-#     last_upload_at: Optional[str] = None
-#     last_download_at: Optional[str] = None
-
-
 class UserManager:
-    def __init__(self):
+    def __init__(self, db: Prisma):
+        self.db = db
         os.makedirs(BASE_FOLDER, exist_ok=True)
-        self.conn = sqlite3.connect(DATABASE_FILE)
-        self.cursor = self.conn.cursor()
-        self.create_tables()
 
-    def create_tables(self):
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user TEXT PRIMARY KEY,
-                token TEXT,
-                total_size INTEGER DEFAULT 0,
-                total_uploads INTEGER DEFAULT 0,
-                total_downloads INTEGER DEFAULT 0,
-                created_at TEXT,
-                last_upload_at TEXT,
-                last_download_at TEXT
-            )
-        """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS files (
-                file_id TEXT PRIMARY KEY,
-                user TEXT,
-                file_name TEXT,
-                file_size INTEGER,
-                upload_time TEXT,
-                FOREIGN KEY (user) REFERENCES users(user)
-            )
-        """)
-        self.conn.commit()
+    async def get_user(self, user_id: str) -> dict:
+        user = await self.db.user.find_unique(where={'user_id': user_id})
+        if user:
+            return user.dict()
+        return await self._initial_user(user_id)
 
-    def _load_user(self, user_id: str) -> Optional[dict]:
-        self.cursor.execute("SELECT * FROM users WHERE user = ?", (user_id,))
-        row = self.cursor.fetchone()
-        if row:
-            return dict(zip([d[0] for d in self.cursor.description], row))
-        return None
-
-    def _save_user(self, user_info: dict):
-        self.cursor.execute(
-            """
-            INSERT OR REPLACE INTO users (user, token, total_size, total_uploads, total_downloads, created_at, last_upload_at, last_download_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_info["user"],
-                user_info["token"],
-                user_info.get("total_size", 0),
-                user_info.get("total_uploads", 0),
-                user_info.get("total_downloads", 0),
-                user_info.get("created_at"),
-                user_info.get("last_upload_at"),
-                user_info.get("last_download_at"),
-            ),
-        )
-        self.conn.commit()
-
-    def _initial_user(self, user_id: str) -> dict:
+    async def _initial_user(self, user_id: str) -> dict:
         new_user = {
-            "user": user_id,
+            "user_id": user_id,
             "token": str(uuid.uuid4()),
-            "created_at": pendulum.now().to_iso8601_string(),
+            # "created_at": pendulum.now().to_iso8601_string(),
         }
-        self._save_user(new_user)
+        await self.db.user.create(data=new_user)
         return new_user
 
-    def get_user(self, user_id: str) -> dict:
-        user = self._load_user(user_id)
-        if user:
-            return user
-        return self._initial_user(user_id)
-
-    def change_token(self, user_id: str) -> dict:
-        user = self.get_user(user_id)
+    async def change_token(self, user_id: str) -> dict:
+        user = await self.get_user(user_id)
         user["token"] = str(uuid.uuid4())
-        self._save_user(user)
+        await self.db.user.update(where={'user_id': user_id}, data={'token': user["token"]})
         return user
 
-    def update_user(self, user_info: dict):
-        self._save_user(user_info)
+    async def update_user(self, user_info: dict):
+        await self.db.user.update(where={'user_id': user_info["user_id"]}, data=user_info)
 
-    def api_token_auth(self, token):
-        self.cursor.execute("SELECT * FROM users WHERE token = ?", (token,))
-        row = self.cursor.fetchone()
-        if row:
-            return User(user=row[0], token=row[1])
+    async def api_token_auth(self, token: str):
+        user = await self.db.user.find_unique(where={'token': token})
+        if user:
+            return User(user=user.user_id, token=user.token)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token"
         )
 
-    def close(self):
-        self.conn.close()
-
-
 async def get_current_user(token: str = Security(oauth2_scheme)):
-    user_manager = UserManager()
-    user = user_manager.api_token_auth(token)
-    user_manager.close()
+    db = Prisma()
+    await db.connect()
+    user_manager = UserManager(db)
+    user = await user_manager.api_token_auth(token)
+    await db.disconnect()
     return user
 
-
 class FileStorage:
-    def __init__(self, user: str):
+    def __init__(self, user: str, db: Prisma):
         self.folder = os.path.join(BASE_FOLDER, user)
         os.makedirs(self.folder, exist_ok=True)
         self.user = user
-        self.user_manager = UserManager()
+        self.db = db
 
     @staticmethod
     def _get_random_string(length: int) -> str:
@@ -207,10 +131,11 @@ class FileStorage:
                 detail="File size exceeds limit",
             )
 
-    def _update_user_usage(
+    async def _update_user_usage(
         self, file_size: Optional[int] = 0, is_deletion: bool = False
     ):
-        user_info = self.user_manager.get_user(self.user)
+        user_manager = UserManager(self.db)
+        user_info = await user_manager.get_user(self.user)
         update_data = {}
         if is_deletion:
             update_data["total_size"] = user_info["total_size"] - file_size
@@ -224,11 +149,8 @@ class FileStorage:
             update_data["total_size"] = new_total_size
             update_data["total_uploads"] = user_info.get("total_uploads", 0) + 1
             update_data["last_upload_at"] = pendulum.now().to_iso8601_string()
-        update_data["user"] = self.user
-        update_data["token"] = user_info["token"]
-        update_data["created_at"] = user_info.get("created_at")
-        update_data["last_download_at"] = user_info.get("last_download_at", None)
-        self.user_manager.update_user(update_data)
+        update_data["user_id"] = self.user
+        await user_manager.update_user(update_data)
 
     def _get_file_path(self, file_id: str) -> str:
         return os.path.join(self.folder, file_id)
@@ -243,81 +165,57 @@ class FileStorage:
                 detail=f"Failed to write file: {e}",
             )
 
-    def _save_file_info(self, file_id: str, file: UploadFile):
-        self.user_manager.cursor.execute(
-            """
-            INSERT INTO files (file_id, user, file_name, file_size, upload_time)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                file_id,
-                self.user,
-                file.filename,
-                file.size,
-                pendulum.now().to_iso8601_string(),
-            ),
-        )
-        self.user_manager.conn.commit()
+    async def _save_file_info(self, file_id: str, file: UploadFile):
+        await self.db.file.create(data={
+            "file_id": file_id,
+            "user_id": self.user,
+            "file_name": file.filename,
+            "file_size": file.size,
+            "created_at": pendulum.now().to_iso8601_string(),
+        })
 
-    def load_files_info(self) -> List[FileInfo]:
-        self.user_manager.cursor.execute(
-            "SELECT * FROM files WHERE user = ?", (self.user,)
-        )
-        rows = self.user_manager.cursor.fetchall()
+    async def load_files_info(self) -> List[FileInfo]:
+        files = await self.db.file.find_many(where={'user_id': self.user})
         return [
             FileInfo(
-                file_id=row[0],
-                file_name=row[2],
-                file_size=row[3],
-                upload_time=row[4],
+                file_id=file.file_id,
+                file_name=file.file_name,
+                file_size=file.file_size,
+                upload_time=file.created_at,
             )
-            for row in rows
+            for file in files
         ]
 
-    def save_file(self, file: UploadFile) -> str:
+    async def save_file(self, file: UploadFile) -> str:
         self._validate_file_size(file)
-        self._update_user_usage(file.size)
+        await self._update_user_usage(file.size)
         file_id = self._get_random_string(DEFAULT_SHORT_PATH_LENGTH)
         file_path = self._get_file_path(file_id)
         self._write_file(file, file_path)
-        self._save_file_info(file_id, file)
+        await self._save_file_info(file_id, file)
         return file_id
 
-    def get_file(self, file_id: str) -> Optional[str]:
-        file_path = self._get_file_path(file_id)
-        return file_path if os.path.exists(file_path) else None
-
-    def get_file_info(self, file_id: str) -> Optional[FileInfo]:
-        self.user_manager.cursor.execute(
-            "SELECT * FROM files WHERE file_id = ?", (file_id,)
-        )
-        row = self.user_manager.cursor.fetchone()
-        if row:
+    async def get_file_info(self, file_id: str) -> Optional[FileInfo]:
+        file = await self.db.file.find_unique(where={'file_id': file_id})
+        if file:
             return FileInfo(
-                file_id=row[0],
-                file_name=row[2],
-                file_size=row[3],
-                upload_time=row[4],
+                file_id=file.file_id,
+                file_name=file.file_name,
+                file_size=file.file_size,
+                upload_time=file.created_at,
             )
         return None
 
-    def delete_file(self, file_id: str) -> bool:
-        file_path = self._get_file_path(file_id)
-        if os.path.exists(file_path):
-            file_info = self.get_file_info(file_id)
-            if file_info:
+    async def delete_file(self, file_id: str) -> bool:
+        file_info = await self.get_file_info(file_id)
+        if file_info:
+            file_path = self._get_file_path(file_id)
+            if os.path.exists(file_path):
                 os.remove(file_path)
-                self._update_user_usage(file_info.file_size, is_deletion=True)
-                self.user_manager.cursor.execute(
-                    "DELETE FROM files WHERE file_id = ?", (file_id,)
-                )
-                self.user_manager.conn.commit()
+                await self._update_user_usage(file_info.file_size, is_deletion=True)
+                await self.db.file.delete(where={'file_id': file_id})
                 return True
         return False
-
-    def close(self):
-        self.user_manager.close()
-
 
 # ... (rest of the code remains largely the same, except for the parts interacting with JSON files which are now replaced with the SQLite interaction)
 

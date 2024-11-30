@@ -10,3 +10,25 @@ generator db {
   recursive_type_depth = 5
 }
 
+model User {
+  user_id    String   @id @unique
+  token      String   @unique
+  created_at DateTime @default(now())
+
+  total_upload_mb   Int? @default(0)
+  total_download_mb Int? @default(0)
+
+  files File[]
+
+  total_size Int? @default(0)
+}
+
+model File {
+  file_id     String   @id @unique
+  user_id     String
+  file_name   String
+  file_size   Int
+  upload_time DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [user_id])
+}
