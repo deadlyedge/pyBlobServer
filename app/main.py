@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import List, Optional
 import pendulum
 import json
 import uuid
@@ -28,7 +28,6 @@ TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
 
 FILES_INFO_FILENAME = "[files_info].json"
 USERS_INFO_FILENAME = "[users_info].json"
-
 
 if ALLOWED_USERS == "":
     logger.error("API_KEYS is empty, please set it in .env file")
@@ -62,6 +61,10 @@ class FileInfo(BaseModel):
     file_name: str
     file_size: int
     upload_time: str
+
+
+class FilesInfoList(BaseModel):
+    files: List[FileInfo]
 
 
 class UserInfo(User):
@@ -145,7 +148,6 @@ class UserManager:
 
         self._save_users_info(users_info)
 
-
     def api_token_auth(self, token):
         # 检查token是否在users_info中
         for user_info in self._load_users_info():
@@ -165,6 +167,8 @@ class FileStorage:
         self.folder = f"{BASE_FOLDER}/{user}"
         self.files_info_path = os.path.join(self.folder, FILES_INFO_FILENAME)
         os.makedirs(self.folder, exist_ok=True)
+        self.user = user
+        self.user_manager = UserManager()
 
     @staticmethod
     def _get_random_string(length: int) -> str:
@@ -177,6 +181,27 @@ class FileStorage:
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="File size exceeds limit",
             )
+
+    def _update_user_usage(self, file_size: int | None = 0, is_deletion: bool = False):
+        file_size = file_size or 0
+        updateInfo = self.user_manager.get_user(self.user)
+        if is_deletion:
+            updateInfo.total_size -= file_size
+        else:
+            if (
+                file_size > 0
+                and updateInfo.total_size + file_size
+                > TOTAL_SIZE_LIMIT_MB * 1024 * 1024
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Total size limit exceeded",
+                )
+
+            updateInfo.total_uploads += file_size
+            updateInfo.total_size += file_size
+            updateInfo.last_upload_at = pendulum.now().to_iso8601_string()
+        self.user_manager.update_user(updateInfo)
 
     def _get_file_path(self, file_id: str) -> str:
         return os.path.join(self.folder, file_id)
@@ -192,23 +217,25 @@ class FileStorage:
             )
 
     def _save_file_info(self, file_id: str, file: UploadFile):
-        files_info_list = self._load_files_info()
+        files_info_list = self.load_files_info()
 
-        file_info = {
-            "file_id": file_id,
-            "file_name": file.filename,
-            "file_size": file.size,
-            "upload_time": pendulum.now().to_iso8601_string(),
-        }
+        file_info = FileInfo(
+            file_id=file_id,
+            file_name=file.filename or "",
+            file_size=file.size or 0,
+            upload_time=pendulum.now().to_iso8601_string(),
+        )
+
         files_info_list.append(file_info)
 
         self._write_files_info(files_info_list)
 
-    def _load_files_info(self) -> list:
+    def load_files_info(self) -> List[FileInfo]:
         if os.path.exists(self.files_info_path):
             try:
                 with open(self.files_info_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    return [FileInfo(**item) for item in json.load(f)]
+
             except (IOError, json.JSONDecodeError) as e:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -216,10 +243,16 @@ class FileStorage:
                 )
         return []
 
-    def _write_files_info(self, files_info_list: list):
+    def _write_files_info(self, files_info_list: List[FileInfo]):
         try:
             with open(self.files_info_path, "w", encoding="utf-8") as f:
-                json.dump(files_info_list, f, indent=4, ensure_ascii=False)
+                data = [data.model_dump() for data in files_info_list]
+                json.dump(
+                    data,
+                    f,
+                    indent=4,
+                    ensure_ascii=False,
+                )
         except IOError as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -228,36 +261,38 @@ class FileStorage:
 
     def save_file(self, file: UploadFile) -> str:
         self._validate_file_size(file)
+        self._update_user_usage(file.size)
         file_id = self._get_random_string(DEFAULT_SHORT_PATH_LENGTH)
         file_path = self._get_file_path(file_id)
         self._write_file(file, file_path)
         self._save_file_info(file_id, file)
+
         return file_id
 
     def get_file(self, file_id: str) -> str | None:
         file_path = self._get_file_path(file_id)
         return file_path if os.path.exists(file_path) else None
 
-    def get_file_info(self, file_id: str) -> dict | None:
-        files_info_list = self._load_files_info()
+    def get_file_info(self, file_id: str) -> FileInfo | None:
+        files_info_list = self.load_files_info()
         for file_info in files_info_list:
-            if file_info["file_id"] == file_id:
+            if file_info.file_id == file_id:
                 return file_info
         return None
 
-    def get_files_info(self) -> list:
-        return self._load_files_info()
+    # def get_files_info(self) -> list[FileInfo]:
+    #     return self.load_files_info()
 
     def delete_file(self, file_id: str) -> bool:
         file_path = self._get_file_path(file_id)
 
         if os.path.exists(file_path):
             os.remove(file_path)
-            files_info_list = self._load_files_info()
+            files_info_list = self.load_files_info()
             files_info_list = [
                 file_info
                 for file_info in files_info_list
-                if file_info["file_id"] != file_id
+                if file_info.file_id != file_id
             ]
             self._write_files_info(files_info_list)
             return True
@@ -321,7 +356,7 @@ async def get_file(
                         <title>Image</title>
                     </head>
                     <body>
-                        <h1>Image{file_info["file_name"]}</h1>
+                        <h1>Image{file_info.file_name}</h1>
                         <img src="/s/{file_id}" alt="Uploaded Image" style="max-width:100%">
                     </body>
                     </html>
@@ -332,15 +367,15 @@ async def get_file(
         case "download":
             return FileResponse(
                 file,
-                filename=file_info["file_name"],
+                filename=file_info.file_name,
                 headers={
-                    "Content-Disposition": f'attachment; filename="{file_info["file_name"]}"'
+                    "Content-Disposition": f'attachment; filename="{file_info.file_name}"'
                 },
             )
         case _:
             return FileResponse(
                 file,
-                filename=file_info["file_name"],
+                filename=file_info.file_name,
             )
 
 
@@ -378,7 +413,7 @@ async def list_files(current_user: User = Depends(get_current_user)):
     列出文件。需要认证
     """
     file_storage = FileStorage(current_user.user)
-    files_info = file_storage.get_files_info()
+    files_info = file_storage.load_files_info()
     return JSONResponse(files_info, status_code=200)
 
 

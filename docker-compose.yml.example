@@ -1,0 +1,23 @@
+services:
+
+  file_server:
+    image: "xdream76/py-blob-server"
+    container_name: "py-blob-server"
+    restart: unless-stopped
+    ports:
+      - "8020:8001"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - py-blob-server-data:/uploads
+    environment:
+      TZ: 'Asia/Hong_Kong'
+      BASE_URL: 'http://localhost:8000'
+      BASE_FOLDER: "/uploads"
+      ALLOWED_USERS: 'xdream@gmail.com,xdream@yahoo.com'
+      DEFAULT_SHORT_PATH_LENGTH: 8
+      FILE_SIZE_LIMIT_MB: 5
+      TOTAL_SIZE_LIMIT_MB: 500
+
+volumes:
+  py-blob-server-data:
+    external: true
