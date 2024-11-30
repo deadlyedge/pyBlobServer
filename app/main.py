@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 import pendulum
 import json
@@ -20,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from loguru import logger
 from dotenv import load_dotenv
+import sqlite3
 
 load_dotenv()
 
@@ -29,15 +31,26 @@ ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
 DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
 FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
 TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
-
-FILES_INFO_FILENAME = "[files_info].json"
-USERS_INFO_FILENAME = "[users_info].json"
+DATABASE_FILE = os.getenv(
+    "DATABASE_FILE", f"{os.getcwd()}/uploads/blobserver.db"
+)  # Added Database file path
 
 if not ALLOWED_USERS:
-    logger.error("API_KEYS is empty, please set it in .env file")
+    logger.error("ALLOWED_USERS is empty, please set it in .env file")
     exit(1)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Close the database connection on shutdown
+    file_storage = FileStorage("dummy")  # Create dummy object to access close method
+    yield
+    file_storage.close()
+    logger.info("Shutting down...")
+
+
+app = FastAPI(lifespan=lifespan)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,90 +75,122 @@ class FileInfo(BaseModel):
     upload_time: str
 
 
-class UserInfo(User):
-    files: List[FileInfo] = []
-    total_size: int = 0
-    total_uploads: int = 0
-    total_downloads: int = 0
-    created_at: str = pendulum.now().to_iso8601_string()
-    last_upload_at: Optional[str] = None
-    last_download_at: Optional[str] = None
+# No longer needed since we use SQLite
+# class UserInfo(User):
+#     files: List[FileInfo] = []
+#     total_size: int = 0
+#     total_uploads: int = 0
+#     total_downloads: int = 0
+#     created_at: str = pendulum.now().to_iso8601_string()
+#     last_upload_at: Optional[str] = None
+#     last_download_at: Optional[str] = None
 
 
 class UserManager:
     def __init__(self):
-        self.users_info_path = os.path.join(BASE_FOLDER, USERS_INFO_FILENAME)
         os.makedirs(BASE_FOLDER, exist_ok=True)
+        self.conn = sqlite3.connect(DATABASE_FILE)
+        self.cursor = self.conn.cursor()
+        self.create_tables()
 
-    def _load_users_info(self) -> List[UserInfo]:
-        if not os.path.exists(self.users_info_path):
-            return []
-        try:
-            with open(self.users_info_path, "r", encoding="utf-8") as f:
-                return [UserInfo(**user_data) for user_data in json.load(f)]
-        except (IOError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load user info: {e}")
-            return []
+    def create_tables(self):
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user TEXT PRIMARY KEY,
+                token TEXT,
+                total_size INTEGER DEFAULT 0,
+                total_uploads INTEGER DEFAULT 0,
+                total_downloads INTEGER DEFAULT 0,
+                created_at TEXT,
+                last_upload_at TEXT,
+                last_download_at TEXT
+            )
+        """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                file_id TEXT PRIMARY KEY,
+                user TEXT,
+                file_name TEXT,
+                file_size INTEGER,
+                upload_time TEXT,
+                FOREIGN KEY (user) REFERENCES users(user)
+            )
+        """)
+        self.conn.commit()
 
-    def _save_users_info(self, users_info_list: List[UserInfo]):
-        try:
-            with open(self.users_info_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    [user.model_dump() for user in users_info_list],
-                    f,
-                    indent=4,
-                    ensure_ascii=False,
-                )
-        except IOError as e:
-            logger.error(f"Failed to save user info: {e}")
+    def _load_user(self, user_id: str) -> Optional[dict]:
+        self.cursor.execute("SELECT * FROM users WHERE user = ?", (user_id,))
+        row = self.cursor.fetchone()
+        if row:
+            return dict(zip([d[0] for d in self.cursor.description], row))
+        return None
 
-    def _initial_user(self, user_id: str) -> UserInfo:
-        new_user = UserInfo(user=user_id, token=str(uuid.uuid4()))
-        self.update_user(new_user)
+    def _save_user(self, user_info: dict):
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO users (user, token, total_size, total_uploads, total_downloads, created_at, last_upload_at, last_download_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_info["user"],
+                user_info["token"],
+                user_info.get("total_size", 0),
+                user_info.get("total_uploads", 0),
+                user_info.get("total_downloads", 0),
+                user_info.get("created_at"),
+                user_info.get("last_upload_at"),
+                user_info.get("last_download_at"),
+            ),
+        )
+        self.conn.commit()
+
+    def _initial_user(self, user_id: str) -> dict:
+        new_user = {
+            "user": user_id,
+            "token": str(uuid.uuid4()),
+            "created_at": pendulum.now().to_iso8601_string(),
+        }
+        self._save_user(new_user)
         return new_user
 
-    def get_user(self, user_id: str) -> UserInfo:
-        users_info = self._load_users_info()
-        for user in users_info:
-            if user.user == user_id:
-                return user
+    def get_user(self, user_id: str) -> dict:
+        user = self._load_user(user_id)
+        if user:
+            return user
         return self._initial_user(user_id)
 
-    def change_token(self, user_id: str) -> UserInfo:
+    def change_token(self, user_id: str) -> dict:
         user = self.get_user(user_id)
-        user.token = str(uuid.uuid4())
-        self.update_user(user)
+        user["token"] = str(uuid.uuid4())
+        self._save_user(user)
         return user
 
-    def update_user(self, user_info: UserInfo):
-        users_info = self._load_users_info()
-        user_index = next(
-            (i for i, user in enumerate(users_info) if user.user == user_info.user),
-            None,
-        )
-        if user_index is not None:
-            users_info[user_index] = user_info
-        else:
-            users_info.append(user_info)
-        self._save_users_info(users_info)
+    def update_user(self, user_info: dict):
+        self._save_user(user_info)
 
     def api_token_auth(self, token):
-        for user_info in self._load_users_info():
-            if user_info.token == token:
-                return User(user=user_info.user, token=user_info.token)
+        self.cursor.execute("SELECT * FROM users WHERE token = ?", (token,))
+        row = self.cursor.fetchone()
+        if row:
+            return User(user=row[0], token=row[1])
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token"
         )
 
+    def close(self):
+        self.conn.close()
+
 
 async def get_current_user(token: str = Security(oauth2_scheme)):
-    return UserManager().api_token_auth(token)
+    user_manager = UserManager()
+    user = user_manager.api_token_auth(token)
+    user_manager.close()
+    return user
 
 
 class FileStorage:
     def __init__(self, user: str):
         self.folder = os.path.join(BASE_FOLDER, user)
-        self.files_info_path = os.path.join(self.folder, FILES_INFO_FILENAME)
         os.makedirs(self.folder, exist_ok=True)
         self.user = user
         self.user_manager = UserManager()
@@ -165,24 +210,25 @@ class FileStorage:
     def _update_user_usage(
         self, file_size: Optional[int] = 0, is_deletion: bool = False
     ):
-        file_size = file_size or 0
-        update_info = self.user_manager.get_user(self.user)
+        user_info = self.user_manager.get_user(self.user)
+        update_data = {}
         if is_deletion:
-            update_info.total_size -= file_size
+            update_data["total_size"] = user_info["total_size"] - file_size
         else:
-            if (
-                file_size > 0
-                and update_info.total_size + file_size
-                > TOTAL_SIZE_LIMIT_MB * 1024 * 1024
-            ):
+            new_total_size = user_info.get("total_size", 0) + file_size
+            if new_total_size > TOTAL_SIZE_LIMIT_MB * 1024 * 1024:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Total size limit exceeded",
                 )
-            update_info.total_uploads += file_size
-            update_info.total_size += file_size
-            update_info.last_upload_at = pendulum.now().to_iso8601_string()
-        self.user_manager.update_user(update_info)
+            update_data["total_size"] = new_total_size
+            update_data["total_uploads"] = user_info.get("total_uploads", 0) + 1
+            update_data["last_upload_at"] = pendulum.now().to_iso8601_string()
+        update_data["user"] = self.user
+        update_data["token"] = user_info["token"]
+        update_data["created_at"] = user_info.get("created_at")
+        update_data["last_download_at"] = user_info.get("last_download_at", None)
+        self.user_manager.update_user(update_data)
 
     def _get_file_path(self, file_id: str) -> str:
         return os.path.join(self.folder, file_id)
@@ -198,42 +244,35 @@ class FileStorage:
             )
 
     def _save_file_info(self, file_id: str, file: UploadFile):
-        files_info_list = self.load_files_info()
-        file_info = FileInfo(
-            file_id=file_id,
-            file_name=file.filename or "",
-            file_size=file.size or 0,
-            upload_time=pendulum.now().to_iso8601_string(),
+        self.user_manager.cursor.execute(
+            """
+            INSERT INTO files (file_id, user, file_name, file_size, upload_time)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                self.user,
+                file.filename,
+                file.size,
+                pendulum.now().to_iso8601_string(),
+            ),
         )
-        files_info_list.append(file_info)
-        self._write_files_info(files_info_list)
+        self.user_manager.conn.commit()
 
     def load_files_info(self) -> List[FileInfo]:
-        if os.path.exists(self.files_info_path):
-            try:
-                with open(self.files_info_path, "r", encoding="utf-8") as f:
-                    return [FileInfo(**item) for item in json.load(f)]
-            except (IOError, json.JSONDecodeError) as e:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to load file info: {e}",
-                )
-        return []
-
-    def _write_files_info(self, files_info_list: List[FileInfo]):
-        try:
-            with open(self.files_info_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    [data.model_dump() for data in files_info_list],
-                    f,
-                    indent=4,
-                    ensure_ascii=False,
-                )
-        except IOError as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to write file info: {e}",
+        self.user_manager.cursor.execute(
+            "SELECT * FROM files WHERE user = ?", (self.user,)
+        )
+        rows = self.user_manager.cursor.fetchall()
+        return [
+            FileInfo(
+                file_id=row[0],
+                file_name=row[2],
+                file_size=row[3],
+                upload_time=row[4],
             )
+            for row in rows
+        ]
 
     def save_file(self, file: UploadFile) -> str:
         self._validate_file_size(file)
@@ -249,28 +288,38 @@ class FileStorage:
         return file_path if os.path.exists(file_path) else None
 
     def get_file_info(self, file_id: str) -> Optional[FileInfo]:
-        files_info_list = self.load_files_info()
-        return next(
-            (
-                file_info
-                for file_info in files_info_list
-                if file_info.file_id == file_id
-            ),
-            None,
+        self.user_manager.cursor.execute(
+            "SELECT * FROM files WHERE file_id = ?", (file_id,)
         )
+        row = self.user_manager.cursor.fetchone()
+        if row:
+            return FileInfo(
+                file_id=row[0],
+                file_name=row[2],
+                file_size=row[3],
+                upload_time=row[4],
+            )
+        return None
 
     def delete_file(self, file_id: str) -> bool:
         file_path = self._get_file_path(file_id)
         if os.path.exists(file_path):
-            os.remove(file_path)
-            files_info_list = [
-                file_info
-                for file_info in self.load_files_info()
-                if file_info.file_id != file_id
-            ]
-            self._write_files_info(files_info_list)
-            return True
+            file_info = self.get_file_info(file_id)
+            if file_info:
+                os.remove(file_path)
+                self._update_user_usage(file_info.file_size, is_deletion=True)
+                self.user_manager.cursor.execute(
+                    "DELETE FROM files WHERE file_id = ?", (file_id,)
+                )
+                self.user_manager.conn.commit()
+                return True
         return False
+
+    def close(self):
+        self.user_manager.close()
+
+
+# ... (rest of the code remains largely the same, except for the parts interacting with JSON files which are now replaced with the SQLite interaction)
 
 
 @app.get("/")
@@ -286,8 +335,8 @@ async def get_user(user_id: str, f: str = ""):
         )
     user_manager = UserManager()
     if f == "change_token":
-        return JSONResponse(user_manager.change_token(user_id).model_dump())
-    return JSONResponse(user_manager.get_user(user_id).model_dump())
+        return JSONResponse(user_manager.change_token(user_id))
+    return JSONResponse(user_manager.get_user(user_id))
 
 
 @app.get("/s/{file_id}")
