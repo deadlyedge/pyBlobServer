@@ -1,3 +1,4 @@
+import asyncio
 import os
 import pendulum
 import uuid
@@ -142,9 +143,12 @@ class FileStorage:
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="File size exceeds limit",
             )
-        
+
         user = await UsersInfo.get(user=self.user)
-        if file.size and user.total_size + file.size > TOTAL_SIZE_LIMIT_MB * 1024 * 1024:
+        if (
+            file.size
+            and user.total_size + file.size > TOTAL_SIZE_LIMIT_MB * 1024 * 1024
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Total size limit exceeded",
@@ -156,19 +160,18 @@ class FileStorage:
             if not is_deletion:
                 user.total_uploads += file_size
                 user.last_upload_at = pendulum.now()
-            user.total_size = self._get_total_size()
+            user.total_size = await self._get_total_size()
             await user.save()
         except DoesNotExist:
             raise HTTPException(status_code=404, detail="User not found")
         except Exception as e:
             logger.error(f"Error updating user usage: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
-    def _get_total_size(self) -> int:
+
+    async def _get_total_size(self) -> int:
         try:
-            return sum(
-                file.file_size
-                for file in FileInfo.select().where(FileInfo.user == self.user)  # xdream mark
-            )
+            files = await FileInfo.filter(user=self.user).all()
+            return sum(file.file_size for file in files)
         except Exception as e:
             logger.error(f"Error getting total size: {e}")
             return 0
@@ -229,12 +232,16 @@ class FileStorage:
 
     async def delete_file(self, file_id: str) -> bool:
         try:
-            file = await FileInfo.get(file_id=file_id)
+            file = await FileInfo.get(
+                file_id=file_id, user=self.user
+            )  # Added user filter for safety
             file_size = file.file_size
-            await file.delete()
             file_path = self._get_file_path(file_id)
             if os.path.exists(file_path):
                 os.remove(file_path)
+            await (
+                file.delete()
+            )  # Moved delete after file path removal to handle potential errors better.
             await self._update_user_usage(file_size, is_deletion=True)
             return True
         except DoesNotExist:
@@ -244,43 +251,36 @@ class FileStorage:
             return False
 
     async def batch_delete(self, function="all") -> bool:
-        if function == "all":
-            try:
-                files = FileInfo.select().where(FileInfo.user == self.user)
-                for file in files:
-                    await self.delete_file(file.file_id)
-                #     file_path = self._get_file_path(file.file_id)
-                #     if os.path.exists(file_path):
-                #         os.remove(file_path)
-                #     file.delete_instance()
-                # self._update_user_usage(is_deletion=True)
+        try:
+            if function == "all":
+                files = await FileInfo.filter(user=self.user).all()
+                logger.info(
+                    f"Deleting {len(files)} files for user {self.user}..."
+                )  # Corrected logging
+                await asyncio.gather(
+                    *(self.delete_file(file.file_id) for file in files)
+                )  # Changed to gather
                 return True
-            except Exception as e:
-                logger.error(f"Error deleting all files: {e}")
-                return False
 
-        elif function == "expired":
-            try:
-                # files = FileInfo.select(pendulum.parse(str(FileInfo.upload_time)).days>90).where(FileInfo.user == self.user)
-                files = (
-                    FileInfo.select().where(FileInfo.user == self.user)
-                    # .where(
-                    #     pendulum.parse(str(FileInfo.upload_time)).add(days=90)
-                    #     < pendulum.now()
-                    # )
-                )
-
-                for file in files:
-                    if pendulum.parse(file.upload_time) < pendulum.now().subtract(
-                        days=90
-                    ):  # type: ignore
-                        self.delete_file(file.file_id)
+            elif function == "expired":
+                cutoff = pendulum.now().subtract(days=90)
+                files = await FileInfo.filter(
+                    user=self.user, upload_time__lt=cutoff
+                ).all()
+                logger.info(
+                    f"Deleting {len(files)} expired files for user {self.user}..."
+                )  # Corrected logging
+                await asyncio.gather(
+                    *(self.delete_file(file.file_id) for file in files)
+                )  # Changed to gather
                 return True
-            except Exception as e:
-                logger.error(f"Error deleting expired files: {e}")
+            else:
                 return False
-        else:
+        except Exception as e:
+            logger.error(f"Error during batch deletion: {e}")
             return False
+
+
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
@@ -296,7 +296,9 @@ async def get_user(user_id: str, f: str = ""):
     try:
         user = await user_manager.get_user(user_id)
         if f == "change_token":
-            return JSONResponse(json_datetime_convert(await user_manager.change_token(user_id)))
+            return JSONResponse(
+                json_datetime_convert(await user_manager.change_token(user_id))
+            )
         return JSONResponse(json_datetime_convert(user))
     except Exception as e:
         logger.error(f"Error in get_user: {e}")
@@ -396,6 +398,45 @@ async def delete_file(file_id: str, current_user=Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Error deleting file: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.delete("/delete_all/")
+async def delete_all(
+    confirm: str = "No", function="all", current_user=Depends(get_current_user)
+):
+    if confirm.lower() != "yes":
+        return JSONResponse(
+            {
+                "error": "Invalid delete_all parameter. Use '?confirm=yes' to confirm deletion of all files."
+            },
+            status_code=404,
+        )
+
+    file_storage = FileStorage(current_user.user)
+
+    if function == "all":
+        try:
+            if await file_storage.batch_delete():
+                logger.info(f"All files deleted for user {current_user.user}")
+                return JSONResponse({"message": "All files deleted"}, status_code=200)
+            return JSONResponse({"error": "No files found"}, status_code=404)
+        except Exception as e:
+            logger.error(f"Error deleting all files: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    if function == "expired":
+        try:
+            if file_storage.batch_delete(function="expired"):
+                logger.info(f"Expired files deleted for user {current_user.user}")
+                return JSONResponse(
+                    {"message": "Expired files deleted"}, status_code=200
+                )
+            return JSONResponse({"error": "No expired files found"}, status_code=404)
+        except Exception as e:
+            logger.error(f"Error deleting expired files: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    return JSONResponse({"error": "Invalid function parameter"}, status_code=400)
 
 
 @app.get("/health")
