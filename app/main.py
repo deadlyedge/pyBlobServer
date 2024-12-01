@@ -256,12 +256,11 @@ class FileStorage:
     def delete_file(self, file_id: str) -> bool:
         try:
             file = FileInfo.get(FileInfo.file_id == file_id)
-            file_size = file.file_size
-            file.delete_instance()
             file_path = self._get_file_path(file_id)
             if os.path.exists(file_path):
                 os.remove(file_path)
-            self._update_user_usage(file_size, is_deletion=True)
+            file.delete_instance()
+            self._update_user_usage(is_deletion=True)
             return True
         except pw.DoesNotExist:
             return False
@@ -269,18 +268,43 @@ class FileStorage:
             logger.error(f"Error deleting file: {e}")
             return False
 
-    def delete_all_files(self) -> bool:
-        try:
-            files = FileInfo.select().where(FileInfo.user == self.user)
-            for file in files:
-                file_path = self._get_file_path(file.file_id)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                file.delete_instance()
-            self._update_user_usage(is_deletion=True)
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting all files: {e}")
+    def batch_delete(self, function="all") -> bool:
+        if function == "all":
+            try:
+                files = FileInfo.select().where(FileInfo.user == self.user)
+                for file in files:
+                    self.delete_file(file.file_id)
+                #     file_path = self._get_file_path(file.file_id)
+                #     if os.path.exists(file_path):
+                #         os.remove(file_path)
+                #     file.delete_instance()
+                # self._update_user_usage(is_deletion=True)
+                return True
+            except Exception as e:
+                logger.error(f"Error deleting all files: {e}")
+                return False
+
+        elif function == "expired":
+            try:
+                # files = FileInfo.select(pendulum.parse(str(FileInfo.upload_time)).days>90).where(FileInfo.user == self.user)
+                files = (
+                    FileInfo.select().where(FileInfo.user == self.user)
+                    # .where(
+                    #     pendulum.parse(str(FileInfo.upload_time)).add(days=90)
+                    #     < pendulum.now()
+                    # )
+                )
+
+                for file in files:
+                    if pendulum.parse(file.upload_time) < pendulum.now().subtract(
+                        days=90
+                    ):  # type: ignore
+                        self.delete_file(file.file_id)
+                return True
+            except Exception as e:
+                logger.error(f"Error deleting expired files: {e}")
+                return False
+        else:
             return False
 
 
@@ -389,9 +413,7 @@ async def list_files(current_user=Depends(get_current_user)):
 
 
 @app.delete("/delete/{file_id}")
-async def delete_file(
-    file_id: str, current_user=Depends(get_current_user)
-):
+async def delete_file(file_id: str, current_user=Depends(get_current_user)):
     file_storage = FileStorage(current_user.user)
     try:
         if file_storage.delete_file(file_id):
@@ -404,24 +426,42 @@ async def delete_file(
 
 
 @app.delete("/delete_all/")
-async def delete_all(delete_all: str = "No", current_user=Depends(get_current_user)):
-    if delete_all != "confirm":
+async def delete_all(
+    confirm: str = "No", function="all", current_user=Depends(get_current_user)
+):
+    if confirm.lower() != "yes":
         return JSONResponse(
             {
-                "error": "Invalid delete_all parameter. Use '?delete_all=confirm' to confirm deletion of all files."
+                "error": "Invalid delete_all parameter. Use '?confirm=yes' to confirm deletion of all files."
             },
             status_code=404,
         )
 
     file_storage = FileStorage(current_user.user)
-    try:
-        if file_storage.delete_all_files():
-            logger.info(f"All files deleted for user {current_user.user}")
-            return JSONResponse({"message": "All files deleted"}, status_code=200)
-        return JSONResponse({"error": "No files found"}, status_code=404)
-    except Exception as e:
-        logger.error(f"Error deleting all files: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    if function == "all":
+        try:
+            if file_storage.batch_delete():
+                logger.info(f"All files deleted for user {current_user.user}")
+                return JSONResponse({"message": "All files deleted"}, status_code=200)
+            return JSONResponse({"error": "No files found"}, status_code=404)
+        except Exception as e:
+            logger.error(f"Error deleting all files: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    if function == "expired":
+        try:
+            if file_storage.batch_delete(function="expired"):
+                logger.info(f"Expired files deleted for user {current_user.user}")
+                return JSONResponse(
+                    {"message": "Expired files deleted"}, status_code=200
+                )
+            return JSONResponse({"error": "No expired files found"}, status_code=404)
+        except Exception as e:
+            logger.error(f"Error deleting expired files: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    return JSONResponse({"error": "Invalid function parameter"}, status_code=400)
 
 
 @app.get("/health")
