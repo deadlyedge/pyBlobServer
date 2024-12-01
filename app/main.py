@@ -18,7 +18,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 
-# from pydantic import BaseModel
 from loguru import logger
 from dotenv import load_dotenv
 import peewee as pw
@@ -96,90 +95,52 @@ app.add_middleware(
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
-# class User(BaseModel):
-#     user: str
-#     token: str
-
-
-# class FileInfo(BaseModel):
-#     file_id: str
-#     file_name: str
-#     file_size: int
-#     upload_time: str
-
-
 class UserManager:
-    def _load_user(self, user_id: str) -> Optional[dict]:
+    def get_user(self, user_id: str) -> Optional[dict]:
         try:
             user = UsersInfo.get(UsersInfo.user == user_id)
-            return model_to_dict(user)
-
+            return user.__data__
+        except pw.DoesNotExist:
+            new_user = UsersInfo.create(user=user_id, token=str(uuid.uuid4()))
+            return new_user.__data__
         except Exception as e:
-            logger.error(f"Error loading user: {e}")
+            logger.error(f"Error getting user: {e}")
             return None
 
-    # def _save_user(self, user_info: dict):
-    #     user, created = UsersInfo.get_or_create(
-    #         user=user_info["user"],
-    #         defaults={
-    #             "token": user_info["token"],
-    #             "created_at": pendulum.parse(user_info["created_at"]),
-    #         },
-    #     )
-    #     if not created:
-    #         # user.token = user_info["token"]
-    #         # user.total_size = user_info.get("total_size", 0)
-    #         # user.total_uploads = user_info.get("total_uploads", 0)
-    #         # user.total_downloads = user_info.get("total_downloads", 0)
-    #         # if user_info.get("last_upload_at"):
-    #         #     user.last_upload_at = pendulum.parse(user_info["last_upload_at"])
-    #         # if user_info.get("last_download_at"):
-    #         #     user.last_download_at = pendulum.parse(user_info["last_download_at"])
-    #         user = UsersInfo.update(**user_info)
-    #         user.save()
-
-    def _initial_user(self, user_id: str) -> dict:
-        new_user = UsersInfo.create(user=user_id, token=str(uuid.uuid4()))
-        return {
-            "user": new_user.user,
-            "token": new_user.token,
-            "created_at": new_user.created_at,
-        }
-
-    def get_user(self, user_id: str) -> dict:
-        user = self._load_user(user_id)
-        if user:
-            return user
-        return self._initial_user(user_id)
-
     def change_token(self, user_id: str) -> dict:
-        user = UsersInfo.get(UsersInfo.user == user_id)
-        user.token = str(uuid.uuid4())
-        user.save()
-        return self.get_user(user_id)
-
-    # def update_user(self, user_info: dict):
-    #     self._save_user(user_info)
+        try:
+            user = UsersInfo.get(UsersInfo.user == user_id)
+            user.token = str(uuid.uuid4())
+            user.save()
+            return model_to_dict(user)
+        except pw.DoesNotExist:
+            raise HTTPException(status_code=404, detail="User not found")
+        except Exception as e:
+            logger.error(f"Error changing token: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
 
     def api_token_auth(self, token):
         try:
             user = UsersInfo.get(UsersInfo.token == token)
-            return UsersInfo(user=user.user, token=user.token)
-        except Exception as e:
-            logger.error(f"Error authenticating user: {e}")
+            return user
+        except pw.DoesNotExist:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token"
             )
-
-    def close(self):
-        db.close()
+        except Exception as e:
+            logger.error(f"Error authenticating user: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server Error"
+            )
 
 
 async def get_current_user(token: str = Security(oauth2_scheme)):
     user_manager = UserManager()
-    user = user_manager.api_token_auth(token)
-    user_manager.close()
-    return user
+    try:
+        user = user_manager.api_token_auth(token)
+        return user
+    except HTTPException as e:
+        raise e
 
 
 class FileStorage:
@@ -199,28 +160,40 @@ class FileStorage:
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="File size exceeds limit",
             )
+        user = UsersInfo.get(UsersInfo.user == self.user)
+
+        if user.total_size + file.size > TOTAL_SIZE_LIMIT_MB * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Total size limit exceeded",
+            )
 
     def _update_user_usage(
         self, file_size: Optional[int] = 0, is_deletion: bool = False
     ):
-        user = UsersInfo.get(UsersInfo.user == self.user)
-        with db.atomic():
-            if not is_deletion:
-                if user.total_size + file_size > TOTAL_SIZE_LIMIT_MB * 1024 * 1024:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Total size limit exceeded",
-                    )
-                user.total_uploads += file_size
-                user.last_upload_at = pendulum.now().to_iso8601_string()
-            user.total_size = self._get_total_size()
-            user.save()
+        try:
+            user = UsersInfo.get(UsersInfo.user == self.user)
+            with db.atomic():
+                if not is_deletion:
+                    user.total_uploads += file_size
+                    user.last_upload_at = pendulum.now().to_iso8601_string()
+                user.total_size = self._get_total_size()
+                user.save()
+        except pw.DoesNotExist:
+            raise HTTPException(status_code=404, detail="User not found")
+        except Exception as e:
+            logger.error(f"Error updating user usage: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
 
     def _get_total_size(self) -> int:
-        return sum(
-            file.file_size
-            for file in FileInfo.select().where(FileInfo.user == self.user)
-        )
+        try:
+            return sum(
+                file.file_size
+                for file in FileInfo.select().where(FileInfo.user == self.user)
+            )
+        except Exception as e:
+            logger.error(f"Error getting total size: {e}")
+            return 0
 
     def _get_file_path(self, file_id: str) -> str:
         return os.path.join(self.folder, file_id)
@@ -236,23 +209,26 @@ class FileStorage:
             )
 
     def _save_file_info(self, file_id: str, file: UploadFile):
-        FileInfo.create(
-            file_id=file_id,
-            user=self.user,  # UsersInfo.get(UsersInfo.user == self.user),
-            file_name=file.filename,
-            file_size=file.size,
-        )
-
-    def load_files_info(self) -> List[FileInfo]:
-        return [
-            FileInfo(
-                file_id=file.file_id,
-                file_name=file.file_name,
-                file_size=file.file_size,
-                upload_time=file.upload_time,
+        try:
+            FileInfo.create(
+                file_id=file_id,
+                user=self.user,
+                file_name=file.filename,
+                file_size=file.size,
             )
-            for file in FileInfo.select().where(FileInfo.user == self.user)
-        ]
+        except Exception as e:
+            logger.error(f"Error saving file info: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    def load_files_info(self) -> List[dict]:
+        try:
+            return [
+                model_to_dict(file_info)
+                for file_info in FileInfo.select().where(FileInfo.user == self.user)
+            ]
+        except Exception as e:
+            logger.error(f"Error loading file info: {e}")
+            return []
 
     def save_file(self, file: UploadFile) -> str:
         self._validate_file_size(file)
@@ -267,36 +243,45 @@ class FileStorage:
         file_path = self._get_file_path(file_id)
         return file_path if os.path.exists(file_path) else None
 
-    def get_file_info(self, file_id: str) -> Optional[FileInfo]:
+    def get_file_info(self, file_id: str) -> Optional[dict]:
         try:
             file = FileInfo.get(FileInfo.file_id == file_id)
-            return FileInfo(
-                file_id=file.file_id,
-                file_name=file.file_name,
-                file_size=file.file_size,
-                upload_time=file.upload_time,
-            )
+            return model_to_dict(file)
+        except pw.DoesNotExist:
+            return None
         except Exception as e:
             logger.error(f"Error loading file info: {e}")
-
             return None
 
     def delete_file(self, file_id: str) -> bool:
         try:
             file = FileInfo.get(FileInfo.file_id == file_id)
+            file_size = file.file_size
             file.delete_instance()
             file_path = self._get_file_path(file_id)
             if os.path.exists(file_path):
                 os.remove(file_path)
-            self._update_user_usage(file.file_size, is_deletion=True)
+            self._update_user_usage(file_size, is_deletion=True)
             return True
+        except pw.DoesNotExist:
+            return False
         except Exception as e:
-            logger.error(f"Error deleting file info: {e}")
-
+            logger.error(f"Error deleting file: {e}")
             return False
 
-    def close(self):
-        db.close()
+    def delete_all_files(self) -> bool:
+        try:
+            files = FileInfo.select().where(FileInfo.user == self.user)
+            for file in files:
+                file_path = self._get_file_path(file.file_id)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                file.delete_instance()
+            self._update_user_usage(is_deletion=True)
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting all files: {e}")
+            return False
 
 
 @app.get("/")
@@ -311,9 +296,13 @@ async def get_user(user_id: str, f: str = ""):
             status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed"
         )
     user_manager = UserManager()
-    if f == "change_token":
-        return JSONResponse(user_manager.change_token(user_id))
-    return JSONResponse(user_manager.get_user(user_id))
+    try:
+        if f == "change_token":
+            return JSONResponse(user_manager.change_token(user_id))
+        return JSONResponse(user_manager.get_user(user_id))
+    except Exception as e:
+        logger.error(f"Error in get_user: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.get("/s/{file_id}")
@@ -322,35 +311,41 @@ async def get_file(
 ):
     logger.info(f"user {current_user} getting.")
     file_storage = FileStorage(current_user.user)
-    file = file_storage.get_file(file_id)
-    if not file:
-        return JSONResponse({"error": "File not found"}, status_code=404)
+    try:
+        file_path = file_storage.get_file(file_id)
+        if not file_path:
+            raise HTTPException(status_code=404, detail="File not found")
 
-    file_info = file_storage.get_file_info(file_id)
-    if not file_info:
-        return JSONResponse({"error": "File info not found"}, status_code=404)
+        file_info = file_storage.get_file_info(file_id)
+        if not file_info:
+            raise HTTPException(status_code=404, detail="File info not found")
 
-    if output == "html":
-        html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head><title>Image</title></head>
-            <body><h1>Image {file_info.file_name}</h1>
-            <img src="/s/{file_id}" alt="Uploaded Image" style="max-width:100%">
-            </body>
-            </html>
-    """
-        return HTMLResponse(content=html_content, status_code=200)
-    if output == "json":
-        return JSONResponse(file_info, status_code=200)
-    disposition = "inline" if output == "download" else "attachment"
-    return FileResponse(
-        file,
-        filename=str(file_info.file_name),
-        headers={
-            "Content-Disposition": f'{disposition}; filename="{file_info.file_name}"'
-        },
-    )
+        if output == "html":
+            html_content = f"""
+                <!DOCTYPE html>
+                <html>
+                <head><title>Image</title></head>
+                <body><h1>Image {file_info['file_name']}</h1>
+                <img src="/s/{file_id}" alt="Uploaded Image" style="max-width:100%">
+                </body>
+                </html>
+        """
+            return HTMLResponse(content=html_content, status_code=200)
+        if output == "json":
+            return JSONResponse(file_info, status_code=200)
+        disposition = "inline" if output == "download" else "attachment"
+        return FileResponse(
+            file_path,
+            filename=str(file_info["file_name"]),
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{file_info["file_name"]}"'
+            },
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error getting file: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.post("/upload")
@@ -359,38 +354,74 @@ async def upload_file(
     file: UploadFile = File(...),
     current_user=Depends(get_current_user),
 ):
-    logger.info(f"user {current_user} is here.")
     file_storage = FileStorage(current_user.user)
-    file_id = file_storage.save_file(file)
-    logger.info(
-        f"{file.filename}, {round((file.size or 1) / 1024 / 1024, 2)} MB, uploaded."
-    )
-    return JSONResponse(
-        {
-            "file_id": file_id,
-            "file_url": f"{BASE_URL}/s/{file_id}",
-            "show_image": f"{BASE_URL}/s/{file_id}?output=html",
-        },
-        status_code=200,
-    )
+    try:
+        file_id = file_storage.save_file(file)
+        logger.info(
+            f"{file.filename}, {round((file.size or 1) / 1024 / 1024, 2)} MB, uploaded."
+        )
+        return JSONResponse(
+            {
+                "file_id": file_id,
+                "file_url": f"{BASE_URL}/s/{file_id}",
+                "show_image": f"{BASE_URL}/s/{file_id}?output=html",
+            },
+            status_code=200,
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error uploading file: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.get("/list")
 async def list_files(current_user=Depends(get_current_user)):
     file_storage = FileStorage(current_user.user)
-    return JSONResponse(
-        [model_to_dict(file_info) for file_info in file_storage.load_files_info()],
-        status_code=200,
-    )
+    try:
+        return JSONResponse(
+            file_storage.load_files_info(),
+            status_code=200,
+        )
+    except Exception as e:
+        logger.error(f"Error listing files: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.delete("/delete/{file_id}")
-async def delete_file(file_id: str, current_user=Depends(get_current_user)):
+async def delete_file(
+    file_id: str, current_user=Depends(get_current_user)
+):
     file_storage = FileStorage(current_user.user)
-    if file_storage.delete_file(file_id):
-        logger.info(f"File {file_id} deleted")
-        return JSONResponse({"message": "File deleted"}, status_code=200)
-    return JSONResponse({"error": "File not found"}, status_code=404)
+    try:
+        if file_storage.delete_file(file_id):
+            logger.info(f"File {file_id} deleted")
+            return JSONResponse({"message": "File deleted"}, status_code=200)
+        return JSONResponse({"error": "File not found"}, status_code=404)
+    except Exception as e:
+        logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.delete("/delete_all/")
+async def delete_all(delete_all: str = "No", current_user=Depends(get_current_user)):
+    if delete_all != "confirm":
+        return JSONResponse(
+            {
+                "error": "Invalid delete_all parameter. Use '?delete_all=confirm' to confirm deletion of all files."
+            },
+            status_code=404,
+        )
+
+    file_storage = FileStorage(current_user.user)
+    try:
+        if file_storage.delete_all_files():
+            logger.info(f"All files deleted for user {current_user.user}")
+            return JSONResponse({"message": "All files deleted"}, status_code=200)
+        return JSONResponse({"error": "No files found"}, status_code=404)
+    except Exception as e:
+        logger.error(f"Error deleting all files: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.get("/health")
