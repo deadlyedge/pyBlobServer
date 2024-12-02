@@ -294,22 +294,30 @@ async def get_user(user_id: str, f: str = ""):
         )
     user_manager = UserManager()
     try:
-        user = await user_manager.get_user(user_id)
         if f == "change_token":
-            return JSONResponse(
-                json_datetime_convert(await user_manager.change_token(user_id))
-            )
-        return JSONResponse(json_datetime_convert(user))
+            user_dict = json_datetime_convert(await user_manager.change_token(user_id))
+            return JSONResponse(user_dict, status_code=200)
+        user_dict = json_datetime_convert(await user_manager.get_user(user_id))
+        user_dict_filtered = {
+            key: value for key, value in user_dict.items() if key != "token"
+        }
+        return JSONResponse(user_dict_filtered, status_code=200)
     except Exception as e:
         logger.error(f"Error in get_user: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.get("/s/{file_id}")
-async def get_file(
-    file_id: str, output: str = "file", current_user=Depends(get_current_user)
-):
-    file_storage = FileStorage(current_user.user)
+async def get_file(file_id: str, output: str = "file"):
+    try:
+        file_info = await FileInfo.get(file_id=file_id)
+        await file_info.fetch_related("user")
+        current_user = file_info.user.user
+    except DoesNotExist:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_storage = FileStorage(current_user)
+
     try:
         file_path = file_storage.get_file(file_id)
         if not file_path:
@@ -417,7 +425,6 @@ async def delete_all(
     if function == "all":
         try:
             if await file_storage.batch_delete():
-                logger.info(f"All files deleted for user {current_user.user}")
                 return JSONResponse({"message": "All files deleted"}, status_code=200)
             return JSONResponse({"error": "No files found"}, status_code=404)
         except Exception as e:
