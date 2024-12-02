@@ -1,6 +1,18 @@
 import datetime
+import os
+from typing import List
 from pendulum import instance, timezone
 from tortoise import fields, models
+
+
+class ENV:
+    BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
+    BASE_FOLDER: str = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
+    ALLOWED_USERS: List[str] = os.getenv("ALLOWED_USERS", "").split(",")
+    DEFAULT_SHORT_PATH_LENGTH: int = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
+    FILE_SIZE_LIMIT_MB: int = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
+    TOTAL_SIZE_LIMIT_MB: int = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite://./uploads/blobserver.db")
 
 
 class UsersInfo(models.Model):

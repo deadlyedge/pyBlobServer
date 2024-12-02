@@ -1,5 +1,6 @@
-import asyncio
+# import asyncio
 import os
+from dotenv import load_dotenv
 import pendulum
 import uuid
 import random
@@ -21,31 +22,31 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from contextlib import asynccontextmanager
 from loguru import logger
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
 from tortoise import Tortoise
 from tortoise.exceptions import DoesNotExist
 
-from app.models import UsersInfo, FileInfo, json_datetime_convert
+from app.models import UsersInfo, FileInfo, json_datetime_convert, ENV
 
 load_dotenv()
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
-BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
-ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
-DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
-FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
-TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite://./uploads/blobserver.db")
+# BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+# BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
+# ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
+# DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
+# FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
+# TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
+# DATABASE_URL = os.getenv("DATABASE_URL", "sqlite://./uploads/blobserver.db")
 
-if not ALLOWED_USERS:
+if not ENV.ALLOWED_USERS:
     logger.error("ALLOWED_USERS is empty, please set it in .env file")
     exit(1)
 
 
 async def database_connect():
     await Tortoise.init(
-        db_url=DATABASE_URL, modules={"models": ["app.models"]}, _create_db=True
+        db_url=ENV.DATABASE_URL, modules={"models": ["app.models"]}, _create_db=True
     )
     await Tortoise.generate_schemas()
 
@@ -56,7 +57,7 @@ async def database_close():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    os.makedirs(BASE_FOLDER, exist_ok=True)
+    os.makedirs(ENV.BASE_FOLDER, exist_ok=True)
     try:
         await database_connect()
         yield
@@ -82,19 +83,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
 class UserManager:
-    async def get_user(self, user_id: str) -> Optional[UsersInfo]:
-        try:
-            return await UsersInfo.get(user=user_id)
-        except DoesNotExist:
-            new_user = await UsersInfo.create(user=user_id, token=str(uuid.uuid4()))
-            return new_user
-        except Exception as e:
-            logger.error(f"Error getting user: {e}")
-            return None
+    def __init__(self, user_id: str):
+        self.user_id = user_id
 
-    async def change_token(self, user_id: str) -> Optional[UsersInfo]:
+    async def _change_token(self) -> Optional[UsersInfo]:
         try:
-            user = await UsersInfo.get(user=user_id)
+            user = await UsersInfo.get(user=self.user_id)
             user.token = str(uuid.uuid4())
             await user.save()
             return user
@@ -104,41 +98,60 @@ class UserManager:
             logger.error(f"Error changing token: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def api_token_auth(self, token: str) -> UsersInfo:
+    async def get_user(self, function: str = "") -> dict:
         try:
-            return await UsersInfo.get(token=token)
+            if function == "change_token":
+                user_dict = json_datetime_convert(await self._change_token())
+            else:
+                user_dict = json_datetime_convert(
+                    await UsersInfo.get(user=self.user_id)
+                )
+                user_dict = {**user_dict, "token": "[hide...]"}
+            return user_dict
         except DoesNotExist:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token"
+            new_user_dict = json_datetime_convert(
+                await UsersInfo.create(user=self.user_id, token=str(uuid.uuid4()))
             )
+            return new_user_dict
         except Exception as e:
-            logger.error(f"Error authenticating user: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server Error"
-            )
+            logger.error(f"Error getting user: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+async def api_token_auth(token: str) -> UsersInfo:
+    try:
+        return await UsersInfo.get(token=token)
+    except DoesNotExist:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token"
+        )
+    except Exception as e:
+        logger.error(f"Error authenticating user: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server Error"
+        )
 
 
 async def get_current_user(token: str = Security(oauth2_scheme)):
-    user_manager = UserManager()
     try:
-        return await user_manager.api_token_auth(token)
+        return await api_token_auth(token)
     except HTTPException as e:
         raise e
 
 
 class FileStorage:
-    def __init__(self, user: str):
-        self.folder = os.path.join(BASE_FOLDER, user)
+    def __init__(self, user: str = ""):
+        self.folder = os.path.join(ENV.BASE_FOLDER, user)
         os.makedirs(self.folder, exist_ok=True)
         self.user = user
 
     @staticmethod
-    def _get_random_string(length: int) -> str:
+    def _generate_random_string(length: int) -> str:
         pool = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnprstuvwxyz2345678"
         return "".join(random.choice(pool) for _ in range(length))
 
     async def _validate_file_size(self, file: UploadFile):
-        if file.size and file.size > FILE_SIZE_LIMIT_MB * 1024 * 1024:
+        if file.size and file.size > ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="File size exceeds limit",
@@ -147,7 +160,7 @@ class FileStorage:
         user = await UsersInfo.get(user=self.user)
         if (
             file.size
-            and user.total_size + file.size > TOTAL_SIZE_LIMIT_MB * 1024 * 1024
+            and user.total_size + file.size > ENV.TOTAL_SIZE_LIMIT_MB * 1024 * 1024
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -176,8 +189,21 @@ class FileStorage:
             logger.error(f"Error getting total size: {e}")
             return 0
 
+    def _check_file_path(self, file_id: str) -> Optional[str]:
+        file_path = self._get_file_path(file_id)
+        return file_path if os.path.exists(file_path) else None
+
     def _get_file_path(self, file_id: str) -> str:
         return os.path.join(self.folder, file_id)
+
+    async def _load_file_info(self, file_id: str) -> Optional[FileInfo]:
+        try:
+            return await FileInfo.get(file_id=file_id)
+        except DoesNotExist:
+            return None
+        except Exception as e:
+            logger.error(f"Error loading file info: {e}")
+            return None
 
     def _write_file(self, file: UploadFile, file_path: str):
         try:
@@ -201,34 +227,84 @@ class FileStorage:
             logger.error(f"Error saving file info: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def load_files_info(self) -> List[FileInfo]:
+    async def get_files_info_list(self) -> List[dict]:
         try:
-            return await FileInfo.filter(user=await UsersInfo.get(user=self.user)).all()
-        except Exception as e:
-            logger.error(f"Error loading file info: {e}")
-            return []
-
-    async def save_file(self, file: UploadFile) -> str:
-        await self._validate_file_size(file)
-        file_id = self._get_random_string(DEFAULT_SHORT_PATH_LENGTH)
-        file_path = self._get_file_path(file_id)
-        self._write_file(file, file_path)
-        await self._save_file_info(file_id, file)
-        await self._update_user_usage(file.size or 0)
-        return file_id
-
-    def get_file(self, file_id: str) -> Optional[str]:
-        file_path = self._get_file_path(file_id)
-        return file_path if os.path.exists(file_path) else None
-
-    async def get_file_info(self, file_id: str) -> Optional[FileInfo]:
-        try:
-            return await FileInfo.get(file_id=file_id)
+            return [
+                json_datetime_convert(f)
+                for f in await FileInfo.filter(
+                    user=await UsersInfo.get(user=self.user)
+                ).all()
+            ]
         except DoesNotExist:
-            return None
+            return []
         except Exception as e:
             logger.error(f"Error loading file info: {e}")
-            return None
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    async def save_file(self, file: UploadFile) -> dict:
+        try:
+            await self._validate_file_size(file)
+            file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+            file_path = self._get_file_path(file_id)
+            self._write_file(file, file_path)
+            await self._save_file_info(file_id, file)
+            await self._update_user_usage(file.size or 0)
+            logger.info(
+                f"{file.filename}, {round((file.size or 1) / 1024 / 1024, 2)} MB, uploaded."
+            )
+            return {
+                "file_id": file_id,
+                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
+                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
+            }
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    async def get_file(
+        self, file_id: str, output: str = "file"
+    ) -> HTMLResponse | JSONResponse | FileResponse:
+        try:
+            file_info = await FileInfo.get(file_id=file_id)
+            await file_info.fetch_related("user")
+            current_user = file_info.user.user
+        except DoesNotExist:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        file_storage = FileStorage(current_user)
+        try:
+            file_path = file_storage._check_file_path(file_id)
+            if not file_path:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            file_info = await file_storage._load_file_info(file_id)
+            if not file_info:
+                raise HTTPException(status_code=404, detail="File info not found")
+        except Exception as e:
+            logger.error(f"Error getting file: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+        if output == "html":
+            html_content = f"""
+                <!DOCTYPE html>
+                <html>
+                <head><title>Image</title></head>
+                <body><h1>Image {file_info.file_name}</h1>
+                <img src="/s/{file_id}" alt="Uploaded Image" style="max-width:100%">
+                </body>
+                </html>
+            """
+            return HTMLResponse(content=html_content, status_code=200)
+        if output == "json":
+            return JSONResponse(json_datetime_convert(file_info), status_code=200)
+        disposition = "inline" if output == "download" else "attachment"
+        return FileResponse(
+            file_path,
+            filename=file_info.file_name,
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{file_info.file_name}"'
+            },
+        )
 
     async def delete_file(self, file_id: str) -> bool:
         try:
@@ -248,19 +324,21 @@ class FileStorage:
             return False
         except Exception as e:
             logger.error(f"Error deleting file: {e}")
-            return False
+            raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def batch_delete(self, function="all") -> bool:
+    async def batch_delete(self, function="all") -> JSONResponse:
         try:
             if function == "all":
                 files = await FileInfo.filter(user=self.user).all()
                 logger.info(
                     f"Deleting {len(files)} files for user {self.user}..."
                 )  # Corrected logging
-                await asyncio.gather(
-                    *(self.delete_file(file.file_id) for file in files)
-                )  # Changed to gather
-                return True
+
+                [
+                    await self.delete_file(file.file_id) for file in files
+                ]  # Changed to gather
+
+                return JSONResponse({"message": "All files deleted"}, status_code=200)
 
             elif function == "expired":
                 cutoff = pendulum.now().subtract(days=90)
@@ -270,15 +348,26 @@ class FileStorage:
                 logger.info(
                     f"Deleting {len(files)} expired files for user {self.user}..."
                 )  # Corrected logging
-                await asyncio.gather(
-                    *(self.delete_file(file.file_id) for file in files)
-                )  # Changed to gather
-                return True
+
+                [
+                    await self.delete_file(file.file_id) for file in files
+                ]  # Changed to gather
+
+                return JSONResponse(
+                    {"message": "All files not been download for 90 days are deleted"},
+                    status_code=200,
+                )
             else:
-                return False
+                return JSONResponse(
+                    {"error": "No file been deleted, function error."}, status_code=405
+                )
         except Exception as e:
             logger.error(f"Error during batch deletion: {e}")
-            return False
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+###############################
+# Routes
 
 
 @app.get("/")
@@ -287,72 +376,34 @@ async def root():
 
 
 @app.get("/user/{user_id}")
-async def get_user(user_id: str, f: str = ""):
-    if user_id not in ALLOWED_USERS:
+async def get_user(user_id: str, function: str = ""):
+    """
+    Fetches user information for a given user ID.
+
+    The function first checks if the user ID is in the list of allowed users.
+
+    If the user is allowed, it attempts to retrieve user information using
+    the UserManager class. Optionally, a function can be specified to change
+    the user's token.
+
+    Args:
+        user_id (str): The ID of the user to retrieve information for.
+        function (str, optional): A function name to execute specific actions
+                                  like changing the token. Defaults to an empty string.
+
+    Returns:
+        JSONResponse: A JSON response containing the user's information.
+    """
+    if user_id not in ENV.ALLOWED_USERS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed"
         )
-    user_manager = UserManager()
-    try:
-        if f == "change_token":
-            user_dict = json_datetime_convert(await user_manager.change_token(user_id))
-            return JSONResponse(user_dict, status_code=200)
-        user_dict = json_datetime_convert(await user_manager.get_user(user_id))
-        user_dict_filtered = {
-            key: value for key, value in user_dict.items() if key != "token"
-        }
-        return JSONResponse(user_dict_filtered, status_code=200)
-    except Exception as e:
-        logger.error(f"Error in get_user: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    return JSONResponse(await UserManager(user_id).get_user(function), status_code=200)
 
 
 @app.get("/s/{file_id}")
 async def get_file(file_id: str, output: str = "file"):
-    try:
-        file_info = await FileInfo.get(file_id=file_id)
-        await file_info.fetch_related("user")
-        current_user = file_info.user.user
-    except DoesNotExist:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    file_storage = FileStorage(current_user)
-
-    try:
-        file_path = file_storage.get_file(file_id)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-
-        file_info = await file_storage.get_file_info(file_id)
-        if not file_info:
-            raise HTTPException(status_code=404, detail="File info not found")
-
-        if output == "html":
-            html_content = f"""
-                <!DOCTYPE html>
-                <html>
-                <head><title>Image</title></head>
-                <body><h1>Image {file_info.file_name}</h1>
-                <img src="/s/{file_id}" alt="Uploaded Image" style="max-width:100%">
-                </body>
-                </html>
-        """
-            return HTMLResponse(content=html_content, status_code=200)
-        if output == "json":
-            return JSONResponse(json_datetime_convert(file_info), status_code=200)
-        disposition = "inline" if output == "download" else "attachment"
-        return FileResponse(
-            file_path,
-            filename=str(file_info.file_name),
-            headers={
-                "Content-Disposition": f'{disposition}; filename="{file_info.file_name}"'
-            },
-        )
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error getting file: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    return await FileStorage().get_file(file_id, output)
 
 
 @app.post("/upload")
@@ -361,57 +412,49 @@ async def upload_file(
     file: UploadFile = File(...),
     current_user=Depends(get_current_user),
 ):
-    file_storage = FileStorage(current_user.user)
-    try:
-        file_id = await file_storage.save_file(file)
-        logger.info(
-            f"{file.filename}, {round((file.size or 1) / 1024 / 1024, 2)} MB, uploaded."
-        )
-        return JSONResponse(
-            {
-                "file_id": file_id,
-                "file_url": f"{BASE_URL}/s/{file_id}",
-                "show_image": f"{BASE_URL}/s/{file_id}?output=html",
-            },
-            status_code=200,
-        )
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    return JSONResponse(
+        await FileStorage(current_user.user).save_file(file),
+        status_code=200,
+    )
 
 
 @app.get("/list")
 async def list_files(current_user=Depends(get_current_user)):
-    file_storage = FileStorage(current_user.user)
-    try:
-        return JSONResponse(
-            [json_datetime_convert(f) for f in await file_storage.load_files_info()],
-            status_code=200,
-        )
-    except Exception as e:
-        logger.error(f"Error listing files: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    return JSONResponse(
+        await FileStorage(current_user.user).get_files_info_list(),
+        status_code=200,
+    )
 
 
 @app.delete("/delete/{file_id}")
 async def delete_file(file_id: str, current_user=Depends(get_current_user)):
-    file_storage = FileStorage(current_user.user)
-    try:
-        if await file_storage.delete_file(file_id):
-            logger.info(f"File {file_id} deleted")
-            return JSONResponse({"message": "File deleted"}, status_code=200)
-        return JSONResponse({"error": "File not found"}, status_code=404)
-    except Exception as e:
-        logger.error(f"Error deleting file: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    if await FileStorage(current_user.user).delete_file(file_id):
+        logger.info(f"File {file_id} deleted")
+        return JSONResponse({"message": "File deleted"}, status_code=200)
+    return JSONResponse({"error": "File not found"}, status_code=404)
 
 
 @app.delete("/delete_all/")
 async def delete_all(
     confirm: str = "No", function="all", current_user=Depends(get_current_user)
 ):
+    """
+    Deletes all or a specific function's files for a current user based on confirmation.
+
+    This endpoint handles the deletion of files for a user. Before performing the deletion,
+    it checks for a confirmation parameter ('confirm') to ensure the user's intent. If the
+    'confirm' parameter is not set to 'yes', the deletion won't be processed.
+
+    Args:
+        confirm (str): Confirmation parameter to authorize file deletion. Default is "No".
+                       To proceed with deletion, this should be set to "yes".
+        function (str): Specifies the function type for deletion, default is "all",
+                        indicating all files.
+        current_user: Dependency injection to get the currently authenticated user.
+
+    Returns:
+        JSONResponse: Confirmation of deletion success or an error message if confirmation
+    """
     if confirm.lower() != "yes":
         return JSONResponse(
             {
@@ -419,31 +462,29 @@ async def delete_all(
             },
             status_code=404,
         )
+    return await FileStorage(current_user.user).batch_delete(function)
+    # if function == "all":
+    #     try:
+    #         if await file_storage.batch_delete():
+    #             return
+    #         return JSONResponse({"error": "No files found"}, status_code=404)
+    #     except Exception as e:
+    #         logger.error(f"Error deleting all files: {e}")
+    #         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    file_storage = FileStorage(current_user.user)
+    # if function == "expired":
+    #     try:
+    #         if file_storage.batch_delete(function="expired"):
+    #             logger.info(f"Expired files deleted for user {current_user.user}")
+    #             return JSONResponse(
+    #                 {"message": "Expired files deleted"}, status_code=200
+    #             )
+    #         return JSONResponse({"error": "No expired files found"}, status_code=404)
+    #     except Exception as e:
+    #         logger.error(f"Error deleting expired files: {e}")
+    #         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    if function == "all":
-        try:
-            if await file_storage.batch_delete():
-                return JSONResponse({"message": "All files deleted"}, status_code=200)
-            return JSONResponse({"error": "No files found"}, status_code=404)
-        except Exception as e:
-            logger.error(f"Error deleting all files: {e}")
-            raise HTTPException(status_code=500, detail="Internal Server Error")
-
-    if function == "expired":
-        try:
-            if file_storage.batch_delete(function="expired"):
-                logger.info(f"Expired files deleted for user {current_user.user}")
-                return JSONResponse(
-                    {"message": "Expired files deleted"}, status_code=200
-                )
-            return JSONResponse({"error": "No expired files found"}, status_code=404)
-        except Exception as e:
-            logger.error(f"Error deleting expired files: {e}")
-            raise HTTPException(status_code=500, detail="Internal Server Error")
-
-    return JSONResponse({"error": "Invalid function parameter"}, status_code=400)
+    # return JSONResponse({"error": "Invalid function parameter"}, status_code=400)
 
 
 @app.get("/health")
