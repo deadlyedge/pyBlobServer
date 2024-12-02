@@ -17,6 +17,8 @@ services:
       DEFAULT_SHORT_PATH_LENGTH: 8
       FILE_SIZE_LIMIT_MB: 5
       TOTAL_SIZE_LIMIT_MB: 500
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "https://f.zick.xyz/health"]
 
 volumes:
   py-blob-server-data:

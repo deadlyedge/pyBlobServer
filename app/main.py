@@ -30,13 +30,6 @@ from app.models import (
 
 load_dotenv()
 
-# BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
-# BASE_FOLDER = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
-# ALLOWED_USERS = os.getenv("ALLOWED_USERS", "").split(",")
-# DEFAULT_SHORT_PATH_LENGTH = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
-# FILE_SIZE_LIMIT_MB = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
-# TOTAL_SIZE_LIMIT_MB = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
-# DATABASE_URL = os.getenv("DATABASE_URL", "sqlite://./uploads/blobserver.db")
 
 if not ENV.ALLOWED_USERS:
     logger.error("ALLOWED_USERS is empty, please set it in .env file")
@@ -199,28 +192,6 @@ async def delete_all(
             status_code=404,
         )
     return await FileStorage(current_user.user).batch_delete(function)
-    # if function == "all":
-    #     try:
-    #         if await file_storage.batch_delete():
-    #             return
-    #         return JSONResponse({"error": "No files found"}, status_code=404)
-    #     except Exception as e:
-    #         logger.error(f"Error deleting all files: {e}")
-    #         raise HTTPException(status_code=500, detail="Internal Server Error")
-
-    # if function == "expired":
-    #     try:
-    #         if file_storage.batch_delete(function="expired"):
-    #             logger.info(f"Expired files deleted for user {current_user.user}")
-    #             return JSONResponse(
-    #                 {"message": "Expired files deleted"}, status_code=200
-    #             )
-    #         return JSONResponse({"error": "No expired files found"}, status_code=404)
-    #     except Exception as e:
-    #         logger.error(f"Error deleting expired files: {e}")
-    #         raise HTTPException(status_code=500, detail="Internal Server Error")
-
-    # return JSONResponse({"error": "Invalid function parameter"}, status_code=400)
 
 
 @app.get("/health")
