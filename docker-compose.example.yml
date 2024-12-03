@@ -14,7 +14,7 @@ services:
       BASE_URL: 'https://f.zick.xyz'
       BASE_FOLDER: "/uploads"
       DATABASE_URL: "sqlite:///uploads/blobserver.db"
-      ALLOWED_USERS: 'xdream@gmail.com,xdream@yahoo.com'
+      ALLOWED_USERS: 'xdream@gmail.com,xdream@yahoo.com'  # you could use any strings comply with folder name restrictions
       DEFAULT_SHORT_PATH_LENGTH: 8
       FILE_SIZE_LIMIT_MB: 5
       TOTAL_SIZE_LIMIT_MB: 500
