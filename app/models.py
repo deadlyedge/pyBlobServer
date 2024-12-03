@@ -61,8 +61,8 @@ _cache = Cache()
 
 
 class UsersInfo(models.Model):
-    user = fields.CharField(max_length=255, pk=True)
-    token = fields.CharField(max_length=255, index=True)  # Added index
+    user = fields.CharField(max_length=255, primary_key=True)
+    token = fields.CharField(max_length=255, db_index=True)  # Added index
     total_size = fields.IntField(default=0)
     total_upload_times = fields.IntField(default=0)
     total_upload_byte = fields.IntField(default=0)
@@ -81,8 +81,8 @@ class UsersInfo(models.Model):
 
 
 class FileInfo(models.Model):
-    file_id = fields.CharField(max_length=255, pk=True)
-    user = fields.ForeignKeyField("models.UsersInfo", related_name="files", index=True)
+    file_id = fields.CharField(max_length=255, primary_key=True)
+    user = fields.ForeignKeyField("models.UsersInfo", related_name="files", db_index=True)
     file_name = fields.CharField(max_length=255)
     file_size = fields.IntField()
     upload_at = fields.DatetimeField(auto_now_add=True)
