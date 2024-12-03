@@ -30,7 +30,6 @@ class ENV:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite://./uploads/blobserver.db")
     CACHE_TTL: int = int(os.getenv("CACHE_TTL", 300))  # 5 minutes cache
     REQUEST_TIMES_PER_MINTUE: int = int(os.getenv("REQUEST_TIMES_PER_MINTUE", 100))
-    
 
 
 # Simple in-memory cache implementation
@@ -360,7 +359,7 @@ class FileStorage:
                     file_path,
                     filename=file_info.file_name,
                     headers={
-                        "Content-Disposition": f'{disposition}; filename="{file_info.file_name}"'
+                        "Content-Disposition": f'{disposition}; filename="{file_info.file_name.encode("utf-8").decode("latin-1")}"'
                     },
                 )
 

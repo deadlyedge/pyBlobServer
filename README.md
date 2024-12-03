@@ -60,7 +60,7 @@ Authorization: Bearer <user_token>
 Get user information and statistics.
 - Query Parameters:
   - `function`: Optional. Set to "change_token" to generate a new token
-- Response: User details including storage usage and token
+- Response: User details including storage usage but token hidden, token will not shown again for security reasons, but you could change it by using `function=change_token`.
 
 #### File Operations
 
@@ -105,7 +105,7 @@ Delete all files or expired files.
   - `confirm`: Must be "yes" to confirm deletion
   - `function`: Optional. Values:
     - `all` (default): Delete all files
-    - `expired`: Delete files not accessed for 90 days
+    - `expired`: Delete files not accessed for 90 days (not been tested yet)
 - Response:
 ```json
 {
