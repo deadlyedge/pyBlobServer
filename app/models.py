@@ -1,10 +1,11 @@
 import os
 import datetime
-import random
 import pendulum
 import uuid
-
-from typing import List, Literal, Optional
+import functools
+import time
+import secrets
+from typing import List, Literal, Optional, Dict, Any
 from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from loguru import logger
@@ -12,20 +13,57 @@ from pendulum import instance, timezone
 from tortoise import fields, models, timezone as tz
 from tortoise.exceptions import DoesNotExist
 
+# from tortoise.indexes import Index
+from tortoise.transactions import in_transaction
+import asyncio
+
 
 class ENV:
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "secret_key")
     BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
     BASE_FOLDER: str = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
     ALLOWED_USERS: List[str] = os.getenv("ALLOWED_USERS", "").split(",")
+    ALLOWED_ORIGINS: List[str] = os.getenv("ALLOWED_ORIGINS", "").split(",")
     DEFAULT_SHORT_PATH_LENGTH: int = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))
     FILE_SIZE_LIMIT_MB: int = int(os.getenv("FILE_SIZE_LIMIT_MB", 10))
     TOTAL_SIZE_LIMIT_MB: int = int(os.getenv("TOTAL_SIZE_LIMIT_MB", 500))
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite://./uploads/blobserver.db")
+    CACHE_TTL: int = int(os.getenv("CACHE_TTL", 300))  # 5 minutes cache
+    REQUEST_TIMES_PER_MINTUE: int = int(os.getenv("REQUEST_TIMES_PER_MINTUE", 100))
+    
+
+
+# Simple in-memory cache implementation
+class Cache:
+    def __init__(self):
+        self._cache: Dict[str, Any] = {}
+        self._timestamps: Dict[str, float] = {}
+
+    def get(self, key: str) -> Optional[Any]:
+        if key in self._cache:
+            if time.time() - self._timestamps[key] < ENV.CACHE_TTL:
+                return self._cache[key]
+            else:
+                del self._cache[key]
+                del self._timestamps[key]
+        return None
+
+    def set(self, key: str, value: Any):
+        self._cache[key] = value
+        self._timestamps[key] = time.time()
+
+    def invalidate(self, key: str):
+        if key in self._cache:
+            del self._cache[key]
+            del self._timestamps[key]
+
+
+_cache = Cache()
 
 
 class UsersInfo(models.Model):
     user = fields.CharField(max_length=255, pk=True)
-    token = fields.CharField(max_length=255)
+    token = fields.CharField(max_length=255, index=True)  # Added index
     total_size = fields.IntField(default=0)
     total_upload_times = fields.IntField(default=0)
     total_upload_byte = fields.IntField(default=0)
@@ -37,11 +75,15 @@ class UsersInfo(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            "token",  # Index for faster token lookups
+            # ("last_upload_at", "last_download_at"),  # Composite index for date queries
+        ]
 
 
 class FileInfo(models.Model):
     file_id = fields.CharField(max_length=255, pk=True)
-    user = fields.ForeignKeyField("models.UsersInfo", related_name="files")
+    user = fields.ForeignKeyField("models.UsersInfo", related_name="files", index=True)
     file_name = fields.CharField(max_length=255)
     file_size = fields.IntField()
     upload_at = fields.DatetimeField(auto_now_add=True)
@@ -50,6 +92,34 @@ class FileInfo(models.Model):
 
     class Meta:
         ordering = ["-upload_at"]
+        indexes = [
+            ("user_id", "upload_at"),  # Composite index for user's file queries
+            ("user_id", "last_download_at"),  # For expired file queries
+        ]
+
+
+def cache_result(ttl: int = ENV.CACHE_TTL):
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Create cache key from function name and arguments
+            cache_key = f"{func.__name__}:{str(args)}:{str(kwargs)}"
+
+            # Try to get from cache
+            result = _cache.get(cache_key)
+            if result is not None:
+                return result
+
+            # If not in cache, execute function
+            result = await func(*args, **kwargs)
+
+            # Store in cache
+            _cache.set(cache_key, result)
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 class UserManager:
@@ -61,6 +131,7 @@ class UserManager:
             user = await UsersInfo.get(user=self.user_id)
             user.token = str(uuid.uuid4())
             await user.save()
+            _cache.invalidate(f"get_user:{self.user_id}")  # Invalidate cache
             return user
         except DoesNotExist:
             raise HTTPException(status_code=404, detail="User not found")
@@ -68,6 +139,7 @@ class UserManager:
             logger.error(f"Error changing token: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
+    @cache_result()
     async def get_user(self, function: str = "") -> dict:
         try:
             if function == "change_token":
@@ -96,24 +168,28 @@ class FileStorage:
 
     @staticmethod
     def _generate_random_string(length: int) -> str:
+        # Using secrets for better randomness
         pool = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnprstuvwxyz2345678"
-        return "".join(random.choice(pool) for _ in range(length))
+        return "".join(secrets.choice(pool) for _ in range(length))
 
     async def _validate_file_size(self, file: UploadFile):
+        if not hasattr(file, "size"):
+            # Get file size if not available
+            file.file.seek(0, 2)
+            file.size = file.file.tell()
+            file.file.seek(0)
+
         if file.size and file.size > ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="File size exceeds limit",
+                detail=f"File size exceeds limit of {ENV.FILE_SIZE_LIMIT_MB}MB",
             )
 
         user = await UsersInfo.get(user=self.user)
-        if (
-            file.size
-            and user.total_size + file.size > ENV.TOTAL_SIZE_LIMIT_MB * 1024 * 1024
-        ):
+        if user.total_size + (file.size or 0) > ENV.TOTAL_SIZE_LIMIT_MB * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Total size limit exceeded",
+                detail=f"Total size limit of {ENV.TOTAL_SIZE_LIMIT_MB}MB exceeded",
             )
 
     async def _update_user_usage(
@@ -122,32 +198,34 @@ class FileStorage:
         function: Literal["upload", "delete", "download"] = "upload",
     ):
         try:
-            user = await UsersInfo.get(user=self.user)
-            match function:
-                case "upload":
-                    user.total_upload_byte += file_size
-                    user.total_upload_times += 1
-                    user.last_upload_at = tz.now()
-                case "delete":
-                    pass
-                case "download":
-                    user.total_download_byte += file_size
-                    user.total_download_times += 1
-                    user.last_download_at = tz.now()
-                case _:
-                    raise ValueError("Invalid function")
+            async with in_transaction():
+                user = await UsersInfo.get(user=self.user)
+                match function:
+                    case "upload":
+                        user.total_upload_byte += file_size
+                        user.total_upload_times += 1
+                        user.last_upload_at = tz.now()
+                    case "delete":
+                        pass
+                    case "download":
+                        user.total_download_byte += file_size
+                        user.total_download_times += 1
+                        user.last_download_at = tz.now()
+                    case _:
+                        raise ValueError("Invalid function")
 
-            user.total_size = await self._get_total_size()
-            logger.info(
-                f"Update {user.user} usage: {function} {file_size/(1024*1024):.3} MB"
-            )
-            await user.save()
-            return {
-                "available_space": f"{(
-                    ENV.TOTAL_SIZE_LIMIT_MB * 1024 * 1024 - user.total_size
+                user.total_size = await self._get_total_size()
+                logger.info(
+                    f"Update {user.user} usage: {function} {file_size/(1024*1024):.3f} MB"
                 )
-                / (1024 * 1024):.3f} MB"
-            }
+                await user.save()
+                _cache.invalidate(f"get_user:{self.user}")  # Invalidate cache
+                return {
+                    "available_space": f"{(
+                        ENV.TOTAL_SIZE_LIMIT_MB * 1024 * 1024 - user.total_size
+                    )
+                    / (1024 * 1024):.3f} MB"
+                }
         except DoesNotExist:
             raise HTTPException(status_code=404, detail="User not found")
         except Exception as e:
@@ -200,14 +278,15 @@ class FileStorage:
             logger.error(f"Error saving file info: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
+    @cache_result(ttl=60)  # Cache for 1 minute
     async def get_files_info_list(self) -> List[dict]:
         try:
-            return [
-                json_datetime_convert(f)
-                for f in await FileInfo.filter(
-                    user=await UsersInfo.get(user=self.user)
-                ).all()
-            ]
+            files = (
+                await FileInfo.filter(user=await UsersInfo.get(user=self.user))
+                .prefetch_related("user")
+                .all()
+            )
+            return [json_datetime_convert(f) for f in files]
         except DoesNotExist:
             return []
         except Exception as e:
@@ -285,7 +364,7 @@ class FileStorage:
                     },
                 )
 
-    async def delete_file(self, file_id: str) -> bool:
+    async def delete_file(self, file_id: str, skip_usage_update: bool = False) -> bool:
         try:
             file = await FileInfo.get(file_id=file_id, user=self.user)
             file_size = file.file_size
@@ -293,7 +372,8 @@ class FileStorage:
             if os.path.exists(file_path):
                 os.remove(file_path)
             await file.delete()
-            await self._update_user_usage(file_size, function="delete")
+            if not skip_usage_update:
+                await self._update_user_usage(file_size, function="delete")
             return True
         except DoesNotExist:
             return False
@@ -303,39 +383,56 @@ class FileStorage:
 
     async def batch_delete(self, function="all") -> JSONResponse:
         try:
-            if function == "all":
-                files = await FileInfo.filter(user=self.user).all()
-                logger.info(
-                    f"Deleting {len(files)} files for user {self.user}..."
-                )  # Corrected logging
+            async with in_transaction():
+                if function == "all":
+                    files = await FileInfo.filter(user=self.user).all()
+                    logger.info(f"Deleting {len(files)} files for user {self.user}...")
 
-                [
-                    await self.delete_file(file.file_id) for file in files
-                ]  # Changed to gather
+                    # Use asyncio.gather for parallel deletion but skip usage updates
+                    await asyncio.gather(
+                        *[
+                            self.delete_file(file.file_id, skip_usage_update=True)
+                            for file in files
+                        ]
+                    )
 
-                return JSONResponse({"message": "All files deleted"}, status_code=200)
+                    # Update usage once after all files are deleted
+                    await self._update_user_usage(0, function="delete")
 
-            elif function == "expired":
-                cutoff = pendulum.now().subtract(days=90)
-                files = await FileInfo.filter(
-                    user=self.user, upload_at__lt=cutoff
-                ).all()
-                logger.info(
-                    f"Deleting {len(files)} expired files for user {self.user}..."
-                )  # Corrected logging
+                    return JSONResponse(
+                        {"message": "All files deleted"}, status_code=200
+                    )
 
-                [
-                    await self.delete_file(file.file_id) for file in files
-                ]  # Changed to gather
+                elif function == "expired":
+                    cutoff = pendulum.now().subtract(days=90)
+                    files = await FileInfo.filter(
+                        user=self.user, upload_at__lt=cutoff
+                    ).all()
+                    logger.info(
+                        f"Deleting {len(files)} expired files for user {self.user}..."
+                    )
 
-                return JSONResponse(
-                    {"message": "All files not been download for 90 days are deleted"},
-                    status_code=200,
-                )
-            else:
-                return JSONResponse(
-                    {"error": "No file been deleted, function error."}, status_code=405
-                )
+                    # Use asyncio.gather for parallel deletion but skip usage updates
+                    await asyncio.gather(
+                        *[
+                            self.delete_file(file.file_id, skip_usage_update=True)
+                            for file in files
+                        ]
+                    )
+
+                    # Update usage once after all files are deleted
+                    await self._update_user_usage(0, function="delete")
+
+                    return JSONResponse(
+                        {
+                            "message": "All files not been download for 90 days are deleted"
+                        },
+                        status_code=200,
+                    )
+                else:
+                    return JSONResponse(
+                        {"error": "Invalid function parameter"}, status_code=405
+                    )
         except Exception as e:
             logger.error(f"Error during batch deletion: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
@@ -343,13 +440,18 @@ class FileStorage:
 
 def json_datetime_convert(data) -> dict:
     tz = timezone("Asia/Hong_Kong")
-    data = {
-        key: value for key, value in data.__dict__.items() if not key.startswith("_")
-    }
+    if hasattr(data, "__dict__"):
+        data = {
+            key: value
+            for key, value in data.__dict__.items()
+            if not key.startswith("_")
+        }
 
     # Convert datetime fields to string
     for key, value in data.items():
         if isinstance(value, datetime.datetime):
             data[key] = tz.convert(instance(value)).to_datetime_string()
+        elif isinstance(value, models.Model):
+            data[key] = json_datetime_convert(value)
 
     return data

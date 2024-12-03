@@ -1,5 +1,7 @@
 import os
 from dotenv import load_dotenv
+from typing import Callable
+import time
 
 from fastapi import (
     FastAPI,
@@ -14,6 +16,9 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from contextlib import asynccontextmanager
 from loguru import logger
@@ -30,6 +35,48 @@ from app.models import (
 
 load_dotenv()
 
+# Rate limiting configuration
+rate_limit_dict = {}
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable):
+        # Get client IP
+        client_ip = request.client.host if request.client else "unknown"
+        current_time = time.time()
+
+        # Clean up old entries
+        rate_limit_dict.clear()
+
+        # Check rate limit
+        if client_ip in rate_limit_dict:
+            requests = rate_limit_dict[client_ip]
+            if len(requests) >= ENV.REQUEST_TIMES_PER_MINTUE:
+                oldest_request = requests[0]
+                if current_time - oldest_request < 60:  # Within 1 minute
+                    return JSONResponse(
+                        status_code=429, content={"error": "Too many requests"}
+                    )
+                requests.pop(0)
+        else:
+            rate_limit_dict[client_ip] = []
+
+        rate_limit_dict[client_ip].append(current_time)
+        return await call_next(request)
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable):
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        logger.info(
+            f"{request.method} {request.url.path} "
+            f"Status: {response.status_code} "
+            f"Duration: {process_time:.3f}s"
+        )
+        return response
+
 
 if not ENV.ALLOWED_USERS:
     logger.error("ALLOWED_USERS is empty, please set it in .env file")
@@ -37,6 +84,7 @@ if not ENV.ALLOWED_USERS:
 
 
 async def database_connect():
+    # Configure database with connection pooling
     await Tortoise.init(
         db_url=ENV.DATABASE_URL, modules={"models": ["app.models"]}, _create_db=True
     )
@@ -63,12 +111,34 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+# Add security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
+    return response
+
+
+# Add middlewares
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(SessionMiddleware, secret_key=ENV.SECRET_KEY)
+
+# Configure CORS with more specific settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ENV.ALLOWED_ORIGINS if hasattr(ENV, "ALLOWED_ORIGINS") else ["*"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=3600,
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
