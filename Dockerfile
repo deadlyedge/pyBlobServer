@@ -1,6 +1,7 @@
 FROM python:3.12-alpine
 LABEL maintainer="xdream oldlu <xdream@gmail.com>"
 
+RUN apk add --no-cache curl
 WORKDIR /app
 
 COPY ./requirements.txt /app/requirements.txt
