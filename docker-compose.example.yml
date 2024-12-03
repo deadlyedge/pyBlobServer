@@ -11,14 +11,16 @@ services:
       - py-blob-server-data:/uploads
     environment:
       TZ: 'Asia/Hong_Kong'
-      BASE_URL: 'http://localhost:8000'
+      BASE_URL: 'https://f.zick.xyz'
       BASE_FOLDER: "/uploads"
+      DATABASE_URL: "sqlite:///uploads/blobserver.db"
       ALLOWED_USERS: 'xdream@gmail.com,xdream@yahoo.com'
       DEFAULT_SHORT_PATH_LENGTH: 8
       FILE_SIZE_LIMIT_MB: 5
       TOTAL_SIZE_LIMIT_MB: 500
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "https://f.zick.xyz/health"]
+      SECRET_KEY: 'some-secret'
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "https://f.zick.xyz/health" ]
 
 volumes:
   py-blob-server-data:
