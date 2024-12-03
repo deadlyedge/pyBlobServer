@@ -82,7 +82,9 @@ class UsersInfo(models.Model):
 
 class FileInfo(models.Model):
     file_id = fields.CharField(max_length=255, primary_key=True)
-    user = fields.ForeignKeyField("models.UsersInfo", related_name="files", db_index=True)
+    user = fields.ForeignKeyField(
+        "models.UsersInfo", related_name="files", db_index=True
+    )
     file_name = fields.CharField(max_length=255)
     file_size = fields.IntField()
     upload_at = fields.DatetimeField(auto_now_add=True)
@@ -306,6 +308,10 @@ class FileStorage:
                 "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
                 **available_space,
             }
+        except HTTPException as e:
+            raise HTTPException(
+                status_code=status.HTTP_426_UPGRADE_REQUIRED, detail=e.detail
+            )
         except Exception as e:
             logger.error(f"Error uploading file: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
