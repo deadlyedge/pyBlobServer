@@ -209,7 +209,7 @@ async def get_user(
     """
     if user_id not in ENV.ALLOWED_USERS:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=f"User {user_id} not allowed. Allowed users: {ENV.ALLOWED_USERS}"
+            status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed"
         )
     return JSONResponse(await UserManager(user_id).get_user(function), status_code=200)
 
