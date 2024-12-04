@@ -174,8 +174,22 @@ async def root():
     return {"message": "Hello World"}
 
 
+@app.get("/auth")
+async def check_token(
+    current_user=Depends(get_current_user),
+):
+    user = (
+        {"user": current_user.user, "token": current_user.token}
+        if current_user
+        else {"message": "Invalid Token"}
+    )
+    return JSONResponse(content=user, status_code=200)
+
+
 @app.get("/user/{user_id}")
-async def get_user(user_id: str, function: str = ""):
+async def get_user(
+    user_id: str, function: str = "", current_user=Depends(get_current_user)
+):
     """
     Fetches user information for a given user ID.
 
@@ -195,7 +209,7 @@ async def get_user(user_id: str, function: str = ""):
     """
     if user_id not in ENV.ALLOWED_USERS:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed"
+            status_code=status.HTTP_403_FORBIDDEN, detail=f"User {user_id} not allowed. Allowed users: {ENV.ALLOWED_USERS}"
         )
     return JSONResponse(await UserManager(user_id).get_user(function), status_code=200)
 

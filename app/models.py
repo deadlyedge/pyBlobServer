@@ -127,7 +127,7 @@ class UserManager:
     def __init__(self, user_id: str):
         self.user_id = user_id
 
-    async def _change_token(self) -> Optional[UsersInfo]:
+    async def _change_token(self) -> UsersInfo:
         try:
             user = await UsersInfo.get(user=self.user_id)
             user.token = str(uuid.uuid4())
@@ -360,7 +360,7 @@ class FileStorage:
                 file_info.download_times += 1
                 file_info.last_download_at = tz.now()
                 await file_info.save()
-                disposition = "inline" if output == "download" else "attachment"
+                disposition = "inline" if output != "download" else "attachment"
                 return FileResponse(
                     file_path,
                     filename=file_info.file_name,
@@ -455,7 +455,7 @@ def json_datetime_convert(data) -> dict:
     # Convert datetime fields to string
     for key, value in data.items():
         if isinstance(value, datetime.datetime):
-            data[key] = tz.convert(instance(value)).to_datetime_string()
+            data[key] = tz.convert(instance(value)).to_iso8601_string()
         elif isinstance(value, models.Model):
             data[key] = json_datetime_convert(value)
 
