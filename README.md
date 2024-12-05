@@ -59,7 +59,7 @@ uvicorn app.main:app --reload
 
 ### Authentication
 
-All endpoints (except `/health`) require Bearer token authentication. Include the token in the Authorization header:
+All endpoints (except `/health` and `/s/file_id`) require Bearer token authentication. Include the token in the Authorization header:
 ```
 Authorization: Bearer <user_token>
 ```
