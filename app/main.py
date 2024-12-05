@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from typing import Callable
+from typing import Callable, List
 import time
 
 from fastapi import (
@@ -217,6 +217,27 @@ async def get_user(
 @app.get("/s/{file_id}")
 async def get_file(file_id: str, output: str = "file"):
     return await FileStorage().get_file(file_id, output)
+
+
+@app.post("/batch_upload")
+async def batch_upload_file(
+    files: List[UploadFile] = [File(...)],
+    current_user=Depends(get_current_user),
+):
+    resaults = []
+    for file in files:
+        try:
+            resaults.append(await FileStorage(current_user.user).save_file(file))
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}")
+            resaults.append(e)
+
+    return JSONResponse(
+        resaults,
+        status_code=status.HTTP_207_MULTI_STATUS
+        if any("status_code" in resault for resault in resaults)
+        else status.HTTP_200_OK,
+    )
 
 
 @app.post("/upload")

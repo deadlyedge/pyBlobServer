@@ -1,4 +1,5 @@
 import os
+import asyncio
 import datetime
 import pendulum
 import uuid
@@ -12,10 +13,7 @@ from loguru import logger
 from pendulum import instance, timezone
 from tortoise import fields, models, timezone as tz
 from tortoise.exceptions import DoesNotExist
-
-# from tortoise.indexes import Index
 from tortoise.transactions import in_transaction
-import asyncio
 
 
 class ENV:
@@ -183,14 +181,14 @@ class FileStorage:
         if file.size and file.size > ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File size exceeds limit of {ENV.FILE_SIZE_LIMIT_MB}MB",
+                detail=f"File size exceeds limit of [{ENV.FILE_SIZE_LIMIT_MB}] MB",
             )
 
         user = await UsersInfo.get(user=self.user)
         if user.total_size + (file.size or 0) > ENV.TOTAL_SIZE_LIMIT_MB * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Total size limit of {ENV.TOTAL_SIZE_LIMIT_MB}MB exceeded",
+                detail=f"Total size limit of [{ENV.TOTAL_SIZE_LIMIT_MB}] MB exceeded",
             )
 
     async def _update_user_usage(
@@ -309,9 +307,12 @@ class FileStorage:
                 **available_space,
             }
         except HTTPException as e:
-            raise HTTPException(
-                status_code=status.HTTP_426_UPGRADE_REQUIRED, detail=e.detail
-            )
+            return {
+                "filename": file.filename,
+                "status_code": status.HTTP_426_UPGRADE_REQUIRED,
+                "error": e.detail,
+            }
+
         except Exception as e:
             logger.error(f"Error uploading file: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
