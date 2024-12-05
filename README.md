@@ -190,3 +190,4 @@ MIT License
 # 📝 TODO
 
 - errors return Json response
+- ~~add batch upload functionality and if any of files failed, return status code of 207.~~
