@@ -6,13 +6,14 @@ A simple and efficient file server API built with Python, FastAPI, and Tortoise 
 
 pyBlobServer is a lightweight and secure file server API that allows users to upload, download, and manage files, it could support especially a frontend developer with a simple api interface.  It provides user authentication, file statistics tracking, cleanup of expired files, rate limiting, and detailed logging.
 
-This project should be deploy on a server with a public IP address, and it should be accessible from the internet. If you want to deploy it on a local machine, you should use a service like [ngrok](https://ngrok.com/) to expose your local server to the internet.
+This project should be deploy on a vps server with a public IP address, and it should be accessible from the internet. If you want to deploy it on a local machine, you should use a service like [ngrok](https://ngrok.com/) to expose your local server to the internet.
 
 This project is NOT aiming to be a full-featured file server, if you need some more performence, you should try some paid blob services, Amazon, Vercel, or Uploadthing have a free plan.
 
 Or you just want to transfer files, in that case, [FilePizza](https://github.com/kernc/filepizza) or [File.io](https://file.io/) maybe better.
 
-Anyway, this project is just for fun and learning, so please don't use it in production, and don't expect it to be stable.
+Anyway, this project is just for fun and learning, so please don't use it in production, and don't expect it to be stable.  In my opinion, it's best for store some picutres or files for a personal website, or a small team, small project, because without a CDN and some chunk technoligy, it's not suitable for large files or high traffic. and I made a little [frontend UI](https://github.com/deadlyedge/blob-server-ui-next) for it, you could use it as a reference, or just use it directly, it's very simple and easy to use, and it's also open source.
+
 
 ## Features
 
