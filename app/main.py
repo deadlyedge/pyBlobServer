@@ -1,22 +1,27 @@
 import os
 from dotenv import load_dotenv
-from typing import Callable, List, Dict, Any
+from typing import Annotated, Callable, List, Dict, Any
 import time
 import uuid
 
 from fastapi import (
+    Cookie,
     FastAPI,
+    Query,
     Request,
     UploadFile,
     File,
     Depends,
     HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    WebSocketException,
     status,
     Security,
     Form,
 )
 from fastapi.responses import JSONResponse
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2AuthorizationCodeBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -34,6 +39,7 @@ from app.models import (
     UserManager,
     FileStorage,
 )
+from app.websocket import manager
 
 load_dotenv()
 
@@ -317,6 +323,35 @@ async def chunked_upload(
     except Exception as e:
         logger.error(f"Error during chunked upload: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.websocket("/")
+async def websocket_endpoint(
+    websocket: WebSocket,
+):
+    request_header_dict = dict(websocket.headers)
+
+    if "authorization" not in request_header_dict.keys() or not request_header_dict[
+        "authorization"
+    ].startswith("Bearer "):
+        logger.error("Authorization token not found in headers.")
+        return WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+
+    current_user = await api_token_auth(
+        request_header_dict["authorization"].split(" ")[1]
+    )
+
+    room = current_user.user
+
+    await manager.connect(websocket, room)
+    await manager.send_personal_message(f"{room} created the room", websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await manager.send_personal_message(f"Message text was: {data}", websocket)
+    except WebSocketDisconnect:
+        print("WebSocket connection closed")
+        manager.disconnect(websocket, room)
 
 
 if __name__ == "__main__":
