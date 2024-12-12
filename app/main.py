@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
-from typing import Callable, List
+from typing import Callable, List, Dict, Any
 import time
+import uuid
 
 from fastapi import (
     FastAPI,
@@ -12,6 +13,7 @@ from fastapi import (
     HTTPException,
     status,
     Security,
+    Form,
 )
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
@@ -302,6 +304,19 @@ async def delete_all(
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok"}, status_code=200)
+
+
+@app.post("/chunked_upload")
+async def chunked_upload(
+    request: Request,
+    current_user: UsersInfo = Depends(get_current_user),
+):
+    try:
+        result = await FileStorage(current_user.user).save_chunk(request)
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        logger.error(f"Error during chunked upload: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 if __name__ == "__main__":
