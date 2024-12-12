@@ -257,7 +257,7 @@ class FileStorage:
             logger.error(f"Error loading file info: {e}")
             return None
 
-    async def _write_file(self, file_stream, file_path: str):
+    async def _write_file_async(self, file_stream, file_path: str):
         try:
             async with aiofiles.open(file_path, "wb") as f:
                 async for chunk in file_stream:
@@ -319,27 +319,12 @@ class FileStorage:
             logger.error(f"Error loading file info: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def save_file(self, file: UploadFile, max_retries: int = 3) -> dict:
+    async def save_file(self, file: UploadFile) -> dict:
         try:
             await self._validate_file_size(file)
             file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
             file_path = self._get_file_path(file_id)
-
-            retries = 0
-            while retries < max_retries:
-                try:
-                    await self._write_file(file.file, file_path)
-                    break  # Exit loop if successful
-                except IOError as e:
-                    if retries == max_retries - 1:
-                        raise  # Re-raise exception after max retries
-                    retries += 1
-                    delay = 2**retries  # Exponential backoff
-                    logger.warning(
-                        f"File write failed, retrying in {delay} seconds: {e}"
-                    )
-                    await asyncio.sleep(delay)
-
+            await self._write_file(file, file_path)
             await self._save_file_info(file_id, file)
             available_space = await self._update_user_usage(file.size or 0)
             return {
