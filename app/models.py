@@ -256,12 +256,10 @@ class FileStorage:
         except Exception as e:
             logger.error(f"Error loading file info: {e}")
             return None
-
-    async def _write_file_async(self, file_stream, file_path: str):
+    def _write_file(self, file: UploadFile, file_path: str):
         try:
-            async with aiofiles.open(file_path, "wb") as f:
-                async for chunk in file_stream:
-                    await f.write(chunk)
+            with open(file_path, "wb") as f:
+                f.write(file.file.read())
         except IOError as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -324,7 +322,7 @@ class FileStorage:
             await self._validate_file_size(file)
             file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
             file_path = self._get_file_path(file_id)
-            await self._write_file(file, file_path)
+            self._write_file(file, file_path)
             await self._save_file_info(file_id, file)
             available_space = await self._update_user_usage(file.size or 0)
             return {
