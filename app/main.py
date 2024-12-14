@@ -321,6 +321,30 @@ async def chunked_upload(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.websocket("/upload_file")
+async def websocket_upload_file(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        current_user = None
+        while True:
+            data = await websocket.receive_bytes()
+            if current_user is None:
+                # Assume the first message is the token for authentication
+                token = data.decode("utf-8")
+                current_user = await api_token_auth(token)
+                await websocket.send_text("User authenticated")
+                continue
+            
+            # Send bytes to the save_websocket_file function
+            file_info = await FileStorage(current_user.user).save_websocket_file(data)
+            await websocket.send_text(f"File uploaded, file_id: {file_info['file_id']}")
+    except WebSocketDisconnect:
+        logger.info("WebSocket connection closed")
+    except Exception as e:
+        logger.error(f"Error in WebSocket upload: {e}")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+
+
 @app.websocket("/")
 async def websocket_endpoint(
     websocket: WebSocket,

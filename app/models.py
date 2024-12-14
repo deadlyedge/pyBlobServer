@@ -16,6 +16,7 @@ from pendulum import instance, timezone
 from tortoise import fields, models, timezone as tz
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
+import io  # Importing io for BytesIO
 
 
 class ENV:
@@ -150,6 +151,7 @@ class UserManager:
                     await UsersInfo.get(user=self.user_id)
                 )
                 user_dict = {**user_dict, "token": "[hidden...]"}
+
             return user_dict
         except DoesNotExist:
             new_user_dict = json_datetime_convert(
@@ -292,16 +294,6 @@ class FileStorage:
         except Exception as e:
             logger.error(f"Error saving file info chunk: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
-        # try:
-        #     await FileInfo.create(
-        #         file_id=file_id,
-        #         user=await UsersInfo.get(user=self.user),
-        #         file_name=file.filename,
-        #         file_size=file.size,
-        #     )
-        # except Exception as e:
-        #     logger.error(f"Error saving file info: {e}")
-        #     raise HTTPException(status_code=500, detail="Internal Server Error")
 
     @cache_result(ttl=60)  # Cache for 1 minute
     async def get_files_info_list(self) -> List[dict]:
@@ -341,6 +333,35 @@ class FileStorage:
 
         except Exception as e:
             logger.error(f"Error uploading file: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    async def save_websocket_file(self, data: bytes) -> dict:
+        try:
+            # Validate file size
+            if len(data) > ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File size exceeds limit of [{ENV.FILE_SIZE_LIMIT_MB}] MB",
+                )
+
+            file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+            file_path = self._get_file_path(file_id)
+
+            # Write the file
+            with open(file_path, "wb") as f:
+                f.write(data)
+
+            # Save file info
+            await self._save_file_info(file_id, UploadFile(filename=file_id, file=io.BytesIO(data)))
+            await self._update_user_usage(len(data), function="upload")
+
+            return {
+                "file_id": file_id,
+                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
+                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
+            }
+        except Exception as e:
+            logger.error(f"Error saving WebSocket file: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
     async def get_file(
