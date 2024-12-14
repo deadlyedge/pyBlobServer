@@ -256,6 +256,7 @@ class FileStorage:
         except Exception as e:
             logger.error(f"Error loading file info: {e}")
             return None
+
     def _write_file(self, file: UploadFile, file_path: str):
         try:
             with open(file_path, "wb") as f:
