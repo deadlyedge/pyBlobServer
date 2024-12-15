@@ -191,9 +191,7 @@ async def check_token(
 
 
 @app.get("/user/{user_id}")
-async def get_user(
-    user_id: str, function: str = "", current_user=Depends(get_current_user)
-):
+async def get_user(user_id: str, function: str = ""):
     """
     Fetches user information for a given user ID.
 
@@ -321,28 +319,50 @@ async def chunked_upload(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.websocket("/upload_file")
+@app.websocket("/upload")
 async def websocket_upload_file(websocket: WebSocket):
+    # request_header_dict = dict(websocket.headers)
+
+    # if "authorization" not in request_header_dict.keys() or not request_header_dict[
+    #     "authorization"
+    # ].startswith("Bearer "):
+    #     logger.error("Authorization token not found in headers.")
+    #     return WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
     await websocket.accept()
+
+    token = await websocket.receive_text()
+
+    current_user = await api_token_auth(token)
+
+    await websocket.send_text(f"user is: {current_user.user}")
+
     try:
-        current_user = None
-        while True:
-            data = await websocket.receive_bytes()
-            if current_user is None:
-                # Assume the first message is the token for authentication
-                token = data.decode("utf-8")
-                current_user = await api_token_auth(token)
-                await websocket.send_text("User authenticated")
-                continue
-            
-            # Send bytes to the save_websocket_file function
-            file_info = await FileStorage(current_user.user).save_websocket_file(data)
-            await websocket.send_text(f"File uploaded, file_id: {file_info['file_id']}")
-    except WebSocketDisconnect:
-        logger.info("WebSocket connection closed")
+        result = await FileStorage(current_user.user).save_websocket_file(websocket)
+        return JSONResponse(result, status_code=200)
     except Exception as e:
-        logger.error(f"Error in WebSocket upload: {e}")
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.error(f"Error during WebSocket upload: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    # await websocket.accept()
+    # try:
+    #     current_user = None
+    #     while True:
+    #         data = await websocket.receive_bytes()
+    #         if current_user is None:
+    #             # Assume the first message is the token for authentication
+    #             token = data.decode("utf-8")
+    #             current_user = await api_token_auth(token)
+    #             await websocket.send_text("User authenticated")
+    #             continue
+
+    #         # Send bytes to the save_websocket_file function
+    #         file_info = await FileStorage(current_user.user).save_websocket_file(data)
+    #         await websocket.send_text(f"File uploaded, file_id: {file_info['file_id']}")
+    # except WebSocketDisconnect:
+    #     logger.info("WebSocket connection closed")
+    # except Exception as e:
+    #     logger.error(f"Error in WebSocket upload: {e}")
+    #     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
 
 
 @app.websocket("/")

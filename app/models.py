@@ -7,7 +7,14 @@ import functools
 import time
 import secrets
 from typing import List, Literal, Optional, Dict, Any
-from fastapi import HTTPException, UploadFile, status, Request
+from fastapi import (
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+    Request,
+)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from urllib.parse import unquote
 import aiofiles
@@ -16,7 +23,6 @@ from pendulum import instance, timezone
 from tortoise import fields, models, timezone as tz
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
-import io  # Importing io for BytesIO
 
 
 class ENV:
@@ -281,6 +287,18 @@ class FileStorage:
             logger.error(f"Error saving file info: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
+    async def _save_file_info_socket(self, file_id: str, filename: str, file_size: int):
+        try:
+            await FileInfo.create(
+                file_id=file_id,
+                user=await UsersInfo.get(user=self.user),
+                file_name=filename,
+                file_size=file_size,
+            )
+        except Exception as e:
+            logger.error(f"Error saving file info: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
     async def _save_file_info_chunk(self, file_id: str, file_name: str, file_size: int):
         try:
             await FileInfo.update_or_create(
@@ -335,34 +353,55 @@ class FileStorage:
             logger.error(f"Error uploading file: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def save_websocket_file(self, data: bytes) -> dict:
+    async def save_websocket_file(self, websocket: WebSocket) -> dict:
+        # await websocket.accept()
+
         try:
-            # Validate file size
-            if len(data) > ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"File size exceeds limit of [{ENV.FILE_SIZE_LIMIT_MB}] MB",
-                )
+            while True:
+                file_name = await websocket.receive_text()  # Receive the file name
+                file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+                file_path = self._get_file_path(file_id)
+                with open(file_path, "wb") as file:
+                    try:
+                        data = await websocket.receive_bytes()  # Receive the file data
+                        if not data:
+                            break
+                        file.write(data)  # Write the data into the file
+                        file_size = len(data)
+                        await self._save_file_info_socket(file_id, file_name, file_size)
+                        # await websocket.send_text(
+                        #     "FILE_RECEIVED"
+                        # )  # Send acknowledgement
+                        await websocket.send_json(
+                            {
+                                "file_id": file_id,
+                                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
+                                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
+                            }
+                        )
+                        await self._update_user_usage(file_size, function="upload")
+                    except WebSocketDisconnect:
+                        break  # Client disconnected
 
-            file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
-            file_path = self._get_file_path(file_id)
-
-            # Write the file
-            with open(file_path, "wb") as f:
-                f.write(data)
-
-            # Save file info
-            await self._save_file_info(file_id, UploadFile(filename=file_id, file=io.BytesIO(data)))
-            await self._update_user_usage(len(data), function="upload")
-
-            return {
-                "file_id": file_id,
-                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
-                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
-            }
         except Exception as e:
-            logger.error(f"Error saving WebSocket file: {e}")
-            raise HTTPException(status_code=500, detail="Internal Server Error")
+            logger.error(f"Error saving file: {e}")
+        # finally:
+        #     try:
+        #         await websocket.close()
+        #     except Exception as e:
+        #         if (
+        #             isinstance(e, RuntimeError)
+        #             and str(e) == "Unexpected ASGI message 'websocket.close'"
+        #         ):
+        #             logger.info("WebSocket closed normally.")
+        #         else:
+        #             logger.error(f"Error closing websocket: {e}")
+
+        return {
+            "file_id": file_id,
+            "file_url": f"{ENV.BASE_URL}/s/{file_id}",
+            "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
+        }
 
     async def get_file(
         self, file_id: str, output: str = "file"
