@@ -10,18 +10,12 @@ async def send_file():
     with open(file_name, "rb") as file:
         file_data = file.read()
 
-    headers: websockets.HeadersLike = [
-        ("Authorization", "Bearer 6b8cd6fc-917e-4f04-a428-c6a0ac94ddff"),
-        # ("Authorization", "Bearer 6b8cd6fc-917e-4f04-a428-c6a0ac94ddff"),
-    ]
     # Connect to the WebSocket and send the file
-    async with websockets.connect(
-        "ws://localhost:8000/upload"
-    ) as websocket:
+    async with websockets.connect("ws://localhost:8000/upload") as websocket:
         await websocket.send("6b8cd6fc-917e-4f04-a428-c6a0ac94ddff")
         await websocket.send(file_name)  # Send the renamed file name
         await websocket.send(file_data)  # Send the file data
-        await websocket.send(b"END_OF_FILE")  # Send end-of-file marker
+        # await websocket.send(b"END_OF_FILE")  # Send end-of-file marker
         print(await websocket.recv())
 
     # Close the connection after sending

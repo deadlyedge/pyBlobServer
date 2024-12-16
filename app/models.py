@@ -353,9 +353,7 @@ class FileStorage:
             logger.error(f"Error uploading file: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def save_websocket_file(self, websocket: WebSocket) -> dict:
-        # await websocket.accept()
-
+    async def save_websocket_file(self, websocket: WebSocket) -> None:
         try:
             while True:
                 file_name = await websocket.receive_text()  # Receive the file name
@@ -369,9 +367,6 @@ class FileStorage:
                         file.write(data)  # Write the data into the file
                         file_size = len(data)
                         await self._save_file_info_socket(file_id, file_name, file_size)
-                        # await websocket.send_text(
-                        #     "FILE_RECEIVED"
-                        # )  # Send acknowledgement
                         await websocket.send_json(
                             {
                                 "file_id": file_id,
@@ -385,23 +380,33 @@ class FileStorage:
 
         except Exception as e:
             logger.error(f"Error saving file: {e}")
-        # finally:
-        #     try:
-        #         await websocket.close()
-        #     except Exception as e:
-        #         if (
-        #             isinstance(e, RuntimeError)
-        #             and str(e) == "Unexpected ASGI message 'websocket.close'"
-        #         ):
-        #             logger.info("WebSocket closed normally.")
-        #         else:
-        #             logger.error(f"Error closing websocket: {e}")
 
-        return {
-            "file_id": file_id,
-            "file_url": f"{ENV.BASE_URL}/s/{file_id}",
-            "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
-        }
+    async def save_chunk(self, request: Request):
+        file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+        file_path = self._get_file_path(file_id)
+        try:
+            filename = request.headers.get("filename", "unknown")
+            filename = unquote(filename)
+            async with aiofiles.open(file_path, "wb") as f:
+                async for chunk_data in request.stream():
+                    await f.write(chunk_data)
+            file_size = os.path.getsize(file_path)
+            await self._save_file_info_chunk(
+                file_id, filename, file_size
+            )  # add file info
+            available_space = await self._update_user_usage(
+                file_size, function="upload"
+            )
+            return {
+                "file_id": file_id,
+                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
+                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
+                **available_space,
+            }
+            return {"status": "chunk failed"}
+        except Exception as e:
+            logger.error(f"Error saving chunk: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
 
     async def get_file(
         self, file_id: str, output: str = "file"
@@ -527,33 +532,6 @@ class FileStorage:
                     )
         except Exception as e:
             logger.error(f"Error during batch deletion: {e}")
-            raise HTTPException(status_code=500, detail="Internal Server Error")
-
-    async def save_chunk(self, request: Request):
-        file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
-        file_path = self._get_file_path(file_id)
-        try:
-            filename = request.headers.get("filename", "unknown")
-            filename = unquote(filename)
-            async with aiofiles.open(file_path, "wb") as f:
-                async for chunk_data in request.stream():
-                    await f.write(chunk_data)
-            file_size = os.path.getsize(file_path)
-            await self._save_file_info_chunk(
-                file_id, filename, file_size
-            )  # add file info
-            available_space = await self._update_user_usage(
-                file_size, function="upload"
-            )
-            return {
-                "file_id": file_id,
-                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
-                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
-                **available_space,
-            }
-            return {"status": "chunk failed"}
-        except Exception as e:
-            logger.error(f"Error saving chunk: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
 

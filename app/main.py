@@ -11,8 +11,6 @@ from fastapi import (
     Depends,
     HTTPException,
     WebSocket,
-    WebSocketDisconnect,
-    WebSocketException,
     status,
     Security,
 )
@@ -35,7 +33,6 @@ from app.models import (
     UserManager,
     FileStorage,
 )
-from app.websocket import manager
 
 load_dotenv()
 
@@ -321,13 +318,6 @@ async def chunked_upload(
 
 @app.websocket("/upload")
 async def websocket_upload_file(websocket: WebSocket):
-    # request_header_dict = dict(websocket.headers)
-
-    # if "authorization" not in request_header_dict.keys() or not request_header_dict[
-    #     "authorization"
-    # ].startswith("Bearer "):
-    #     logger.error("Authorization token not found in headers.")
-    #     return WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
     await websocket.accept()
 
     token = await websocket.receive_text()
@@ -342,56 +332,6 @@ async def websocket_upload_file(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Error during WebSocket upload: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
-    # await websocket.accept()
-    # try:
-    #     current_user = None
-    #     while True:
-    #         data = await websocket.receive_bytes()
-    #         if current_user is None:
-    #             # Assume the first message is the token for authentication
-    #             token = data.decode("utf-8")
-    #             current_user = await api_token_auth(token)
-    #             await websocket.send_text("User authenticated")
-    #             continue
-
-    #         # Send bytes to the save_websocket_file function
-    #         file_info = await FileStorage(current_user.user).save_websocket_file(data)
-    #         await websocket.send_text(f"File uploaded, file_id: {file_info['file_id']}")
-    # except WebSocketDisconnect:
-    #     logger.info("WebSocket connection closed")
-    # except Exception as e:
-    #     logger.error(f"Error in WebSocket upload: {e}")
-    #     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-
-
-@app.websocket("/")
-async def websocket_endpoint(
-    websocket: WebSocket,
-):
-    request_header_dict = dict(websocket.headers)
-
-    if "authorization" not in request_header_dict.keys() or not request_header_dict[
-        "authorization"
-    ].startswith("Bearer "):
-        logger.error("Authorization token not found in headers.")
-        return WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
-
-    current_user = await api_token_auth(
-        request_header_dict["authorization"].split(" ")[1]
-    )
-
-    room = current_user.user
-
-    await manager.connect(websocket, room)
-    await manager.send_personal_message(f"{room} created the room", websocket)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            await manager.send_personal_message(f"Message text was: {data}", websocket)
-    except WebSocketDisconnect:
-        print("WebSocket connection closed")
-        manager.disconnect(websocket, room)
 
 
 if __name__ == "__main__":
