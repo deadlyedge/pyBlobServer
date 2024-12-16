@@ -90,6 +90,13 @@ Upload a new file.
 }
 ```
 
+##### Several Upload Endpoint Added
+
+websocket is fast, demo code at: 
+- python: https://github.com/deadlyedge/pyBlobServer/blob/with-websockets/app/test_send_file.py
+- react/nextjs: https://github.com/deadlyedge/blob-server-ui-next/blob/master/components/uploadZone.tsx
+  
+
 ##### GET `/s/{file_id}`
 Download or view a file.
 - Query Parameters:
