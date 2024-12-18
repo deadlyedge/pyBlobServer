@@ -14,6 +14,21 @@ Or you just want to transfer files, in that case, [FilePizza](https://github.com
 
 Anyway, this project is just for fun and learning, so please don't use it in production, and don't expect it to be stable.  In my opinion, it's best for store some picutres or files for a personal website, or a small team, small project, because without a CDN and some chunk technoligy, it's not suitable for large files or high traffic. and I made a little [frontend UI](https://github.com/deadlyedge/blob-server-ui-next) for it, you could use it as a reference, or just use it directly, it's very simple and easy to use, and it's also open source.
 
+This two project working together for just one goal: Make your VPS investment worthy.
+
+
+As a hobby programer, I learn programing just for fun and buy a VPS just for show off, or at least at the beginning.  And then I found if I want to safe my files for some more show offs, I can't, I need to pay more for some blob services again.  So I'm very angry and I have to write something to get back my control.
+
+And when I did, I found something fun from it.
+
+So here we are.
+
+This project is not finished but very usable, just for some funciton not finished yet.  But I expect it will save your cost in the future but it's all depends on the project you want to host.
+
+Still, you can consider this is public beta, have some fun!
+
+During my coding works, AI did 80% works somehow, I just drink some coffee and do minor adjustments.  It's amazing.  Time's changed,
+people can now do only thinking works, and left 80% for AI.  Pretty cool!
 
 ## Features
 
