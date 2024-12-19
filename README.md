@@ -215,4 +215,6 @@ MIT License
 - errors return Json response
 - ~~add batch upload functionality and if any of files failed, return status code of 207.~~
 - do more testing on every api endpoints
-- think of do something like tus protocal do, they're good on something but bad to make them happen, sadly.
+- ~~think of do something like tus protocal do, they're good on something but bad to make them happen, sadly.~~
+- add tus protocal to upload function, by uppy lib.
+- add upload function switch to ui.

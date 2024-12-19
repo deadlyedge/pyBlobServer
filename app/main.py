@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -27,10 +28,11 @@ from loguru import logger
 from tortoise import Tortoise
 from tortoise.exceptions import DoesNotExist
 
-from app.models.env import ENV
-from app.models.database_models import UsersInfo
-from app.models.user_manager import UserManager
-from app.models.file_storage import FileStorage
+from app.modules.env import ENV
+from app.modules.database_models import UsersInfo
+from app.modules.tusserver.tus import create_api_router
+from app.modules.user_manager import UserManager
+from app.modules.file_storage import FileStorage
 
 
 load_dotenv()
@@ -87,7 +89,7 @@ async def database_connect():
     # Configure database with connection pooling
     await Tortoise.init(
         db_url=ENV.DATABASE_URL,
-        modules={"models": ["app.models.database_models"]},
+        modules={"models": ["app.modules.database_models"]},
         _create_db=True,
     )
     await Tortoise.generate_schemas()
@@ -138,7 +140,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ENV.ALLOWED_ORIGINS if hasattr(ENV, "ALLOWED_ORIGINS") else ["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=[
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+    ],  # xdream note: updated to include all methods
     allow_headers=["Authorization", "Content-Type"],
     max_age=3600,
 )
@@ -334,6 +341,25 @@ async def websocket_upload_file(websocket: WebSocket):
         logger.error(f"Error during WebSocket upload: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+def on_upload_complete(file_path: str, metadata: dict):
+    print("Upload complete")
+    print(file_path)
+    print(metadata)
+
+
+app.include_router(
+    create_api_router(
+        files_dir=os.path.join(ENV.BASE_FOLDER, "tus_upload_tmp"),
+        max_size=ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024,
+        on_upload_complete=on_upload_complete,
+        auth=get_current_user,
+        prefix="upload_tus",
+    ),
+)
 
 if __name__ == "__main__":
     import uvicorn

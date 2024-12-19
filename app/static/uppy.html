@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Uppy</title>
+    <link
+      href="https://releases.transloadit.com/uppy/v4.8.0/uppy.min.css"
+      rel="stylesheet" />
+  </head>
+  <body>
+    <div id="uppy"></div>
+
+    <script type="module">
+      import {
+        Uppy,
+        Dashboard,
+        Tus,
+      } from "https://releases.transloadit.com/uppy/v4.8.0/uppy.min.mjs"
+      var headers = new Headers()
+      headers.append(
+        "Authorization",
+        "Bearer 693a2c91-fac0-4bce-8962-22c379f88f98"
+      )
+      var uppy = new Uppy()
+        .use(Dashboard, { target: "#uppy", inline: true })
+        .use(Tus, {
+          endpoint: "http://127.0.0.1:8000/upload_tus",
+          headers: {
+            authorization: "Bearer 693a2c91-fac0-4bce-8962-22c379f88f98",
+          },
+        })
+
+      uppy.on("complete", (result) => {
+        console.log(
+          "Upload complete! We’ve uploaded these files:",
+          result.successful
+        )
+      })
+    </script>
+  </body>
+</html>

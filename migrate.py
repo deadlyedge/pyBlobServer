@@ -1,11 +1,11 @@
 from tortoise import Tortoise
 import asyncio
-from app.models import ENV
+from app.modules.env import ENV
 
 async def migrate():
     await Tortoise.init(
         db_url=ENV.DATABASE_URL,
-        modules={'models': ['app.models']},
+        modules={'models': ['app.modules.database_models']},
         _create_db=True
     )
     await Tortoise.generate_schemas()
