@@ -6,6 +6,7 @@ class ENV:
     SECRET_KEY: str = os.getenv("SECRET_KEY", "secret_key")
     BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
     BASE_FOLDER: str = os.getenv("BASE_FOLDER", f"{os.getcwd()}/uploads")
+    TUS_TEMP_FOLDER: str = os.getenv("TUS_TEMP_FOLDER", "tus_upload_tmp")
     ALLOWED_USERS: List[str] = os.getenv("ALLOWED_USERS", "testuser").split(",")
     ALLOWED_ORIGINS: List[str] = os.getenv("ALLOWED_ORIGINS", "*").split(",")
     DEFAULT_SHORT_PATH_LENGTH: int = int(os.getenv("DEFAULT_SHORT_PATH_LENGTH", 8))

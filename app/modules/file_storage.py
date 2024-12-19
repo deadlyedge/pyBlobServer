@@ -1,5 +1,7 @@
 import asyncio
 import os
+import shutil
+
 # import aiofiles
 import pendulum
 
@@ -19,6 +21,8 @@ from loguru import logger
 from tortoise import timezone as tz
 from tortoise.transactions import in_transaction
 from tortoise.exceptions import DoesNotExist
+
+from app.modules.tusserver.metadata import FileMetadata
 
 from .cache import cache_result
 from .utils import json_datetime_convert, generate_random_string
@@ -124,6 +128,17 @@ class FileStorage:
                 detail=f"Failed to write file: {e}",
             )
 
+    def _move_file(self, temp_path: str, file_path: str):
+        try:
+            print(f"{temp_path=}---{file_path=}")
+            shutil.move(temp_path, file_path)
+            # os.remove(f"{temp_path}.info")
+        except IOError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to move file: {e}",
+            )
+
     async def _save_file_info(self, file_id: str, file: UploadFile):
         try:
             await FileInfo.create(
@@ -148,13 +163,16 @@ class FileStorage:
             logger.error(f"Error saving file info: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    async def _save_file_info_chunk(self, file_id: str, file_name: str, file_size: int):
+    async def _save_file_info_tus(
+        self, file_id: str, file_name: str, file_type: str, file_size: int
+    ):
         try:
             await FileInfo.update_or_create(
                 file_id=file_id,
                 defaults={
                     "user": await UsersInfo.get(user=self.user),
                     "file_name": file_name,
+                    "file_type": file_type,
                     "file_size": file_size,
                 },
             )
@@ -201,6 +219,36 @@ class FileStorage:
             logger.error(f"Error uploading file: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
+    async def save_tus_file(self, metadata: FileMetadata) -> dict:
+        try:
+            file_id = generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+            file_path = self._get_file_path(file_id)
+            self._move_file(
+                f"{ENV.BASE_FOLDER}/{ENV.TUS_TEMP_FOLDER}/{metadata.uid}", file_path
+            )
+            await self._save_file_info_tus(
+                file_id,
+                file_name=metadata.metadata["filename"],
+                file_type=metadata.metadata["filetype"],
+                file_size=metadata.size,
+            )
+            available_space = await self._update_user_usage(metadata.size or 0)
+            return {
+                "file_id": file_id,
+                "file_url": f"{ENV.BASE_URL}/s/{file_id}",
+                "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
+                **available_space,
+            }
+        except HTTPException as e:
+            return {
+                "filename": metadata.metadata["filename"],
+                "status_code": status.HTTP_426_UPGRADE_REQUIRED,
+                "error": e.detail,
+            }
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
     async def save_websocket_file(self, websocket: WebSocket) -> None:
         try:
             while True:
@@ -228,32 +276,6 @@ class FileStorage:
 
         except Exception as e:
             logger.error(f"Error saving file: {e}")
-
-    # async def save_chunk(self, request: Request):
-    #     file_id = generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
-    #     file_path = self._get_file_path(file_id)
-    #     try:
-    #         filename = unquote(request.headers.get("filename", "unknown"))
-    #         async with aiofiles.open(file_path, "wb") as f:
-    #             async for chunk_data in request.stream():
-    #                 await f.write(chunk_data)
-    #         file_size = os.path.getsize(file_path)
-
-    #         await self._save_file_info_chunk(
-    #             file_id, filename, file_size
-    #         )  # Save file info
-    #         available_space = await self._update_user_usage(
-    #             file_size, function="upload"
-    #         )
-    #         return {
-    #             "file_id": file_id,
-    #             "file_url": f"{ENV.BASE_URL}/s/{file_id}",
-    #             "show_image": f"{ENV.BASE_URL}/s/{file_id}?output=html",
-    #             **available_space,
-    #         }
-    #     except Exception as e:
-    #         logger.error(f"Error saving chunk: {e}")
-    #         raise HTTPException(status_code=500, detail="Internal Server Error")
 
     async def get_file(
         self, file_id: str, output: str = "file"

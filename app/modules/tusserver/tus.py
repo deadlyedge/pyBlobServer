@@ -2,7 +2,7 @@ import base64
 import json
 import os
 from datetime import datetime, timedelta
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from fastapi import (
@@ -18,6 +18,7 @@ from fastapi import (
 from starlette.responses import FileResponse
 
 from app.modules.database_models import UsersInfo
+
 from .metadata import FileMetadata
 
 
@@ -28,8 +29,8 @@ def default_auth():
 def create_api_router(
     files_dir="/tmp/files",
     max_size=128849018880,
-    on_upload_complete: Optional[Callable[[str, dict], None]] = None,
-    auth: Optional[Callable[[], Coroutine[Any, Any, UsersInfo] | None]] = default_auth,
+    on_upload_complete: Optional[Callable[[str, FileMetadata], Any]] = None,
+    auth: Optional[Callable[[], Any]] = default_auth,
     days_to_keep: int = 5,
     prefix: str = "files",
 ):
@@ -53,7 +54,7 @@ def create_api_router(
                     return None
 
                 if _get_file_length(uuid) + len(chunk) > max_size:
-                    raise HTTPException(status_code=413)
+                    break
 
                 f.write(chunk)
                 meta.offset += len(chunk)
@@ -62,6 +63,9 @@ def create_api_router(
                 _write_metadata(meta)
 
             f.close()
+        if _get_file_length(uuid) + 512000 > max_size:
+            _delete_files(uuid)
+            raise HTTPException(status_code=413)
 
         return True
 
@@ -84,7 +88,7 @@ def create_api_router(
         return response
 
     @router.patch("/{uuid}", status_code=status.HTTP_204_NO_CONTENT)
-    def upload_chunk(
+    async def upload_chunk(
         response: Response,
         uuid: str,
         content_type: str = Header(None),
@@ -93,14 +97,13 @@ def create_api_router(
         _=Depends(_get_request_chunk),
         __=Depends(auth),
     ) -> Response:
-        response_headers = _get_and_save_the_file(
+        response_headers = await _get_and_save_the_file(
             response,
             uuid,
             content_type,
             content_length,
             upload_offset,
         )
-
         return response_headers
 
     @router.options("/", status_code=status.HTTP_204_NO_CONTENT)
@@ -120,7 +123,7 @@ def create_api_router(
         upload_metadata: str = Header(None),
         upload_length: int = Header(None),
         upload_defer_length: int = Header(None),
-        _=Depends(auth),
+        current_user: UsersInfo = Depends(auth),
     ) -> Response:
         if upload_defer_length is not None and upload_defer_length != 1:
             raise HTTPException(status_code=400, detail="Invalid Upload-Defer-Length")
@@ -128,7 +131,7 @@ def create_api_router(
         defer_length = upload_defer_length is not None
 
         # Create a new upload and store the file and metadata in the mapping
-        metadata = {}
+        metadata = {"userId": current_user.user}
         if upload_metadata is not None and upload_metadata != "":
             # Decode the base64-encoded string
             for kv in upload_metadata.split(","):
@@ -153,7 +156,7 @@ def create_api_router(
 
         chunk: bool | None = await _get_request_chunk(request, uuid, True)
         if chunk:
-            response = _get_and_save_the_file(
+            response = await _get_and_save_the_file(
                 response,
                 uuid,
             )
@@ -259,7 +262,7 @@ def create_api_router(
         if os.path.exists(meta_path):
             os.remove(meta_path)
 
-    def _get_and_save_the_file(
+    async def _get_and_save_the_file(
         response: Response,
         uuid: str,
         content_type: str = Header(None),
@@ -295,7 +298,7 @@ def create_api_router(
             response.headers["Upload-Expires"] = str(meta.expires)
             response.status_code = status.HTTP_204_NO_CONTENT
             if on_upload_complete:
-                on_upload_complete(os.path.join(files_dir, f"{uuid}"), meta.model_dump())
+                await on_upload_complete(os.path.join(files_dir, f"{uuid}"), meta)
 
             return response
 

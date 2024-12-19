@@ -30,6 +30,7 @@ from tortoise.exceptions import DoesNotExist
 
 from app.modules.env import ENV
 from app.modules.database_models import UsersInfo
+from app.modules.tusserver.metadata import FileMetadata
 from app.modules.tusserver.tus import create_api_router
 from app.modules.user_manager import UserManager
 from app.modules.file_storage import FileStorage
@@ -145,6 +146,9 @@ app.add_middleware(
         "POST",
         "PUT",
         "DELETE",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
     ],  # xdream note: updated to include all methods
     allow_headers=["Authorization", "Content-Type"],
     max_age=3600,
@@ -311,19 +315,6 @@ async def health():
     return JSONResponse({"status": "ok"}, status_code=200)
 
 
-# @app.post("/chunked_upload")
-# async def chunked_upload(
-#     request: Request,
-#     current_user: UsersInfo = Depends(get_current_user),
-# ):
-#     try:
-#         result = await FileStorage(current_user.user).save_chunk(request)
-#         return JSONResponse(result, status_code=200)
-#     except Exception as e:
-#         logger.error(f"Error during chunked upload: {e}")
-#         return JSONResponse({"error": str(e)}, status_code=500)
-
-
 @app.websocket("/upload")
 async def websocket_upload_file(websocket: WebSocket):
     await websocket.accept()
@@ -342,18 +333,27 @@ async def websocket_upload_file(websocket: WebSocket):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# TUS upload local tester with uppy
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
-def on_upload_complete(file_path: str, metadata: dict):
-    print("Upload complete")
-    print(file_path)
-    print(metadata)
+# handle TUS upload
+async def on_upload_complete(file_path: str, metadata: FileMetadata):
+    # print("Upload complete")
+    # print(file_path)
+    # print(metadata)
+    try:
+        result = await FileStorage(metadata.metadata["userId"]).save_tus_file(metadata)
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        logger.error(f"Error during TUS upload: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# Setup TUS upload adapter
 app.include_router(
     create_api_router(
-        files_dir=os.path.join(ENV.BASE_FOLDER, "tus_upload_tmp"),
+        files_dir=os.path.join(ENV.BASE_FOLDER, ENV.TUS_TEMP_FOLDER),
         max_size=ENV.FILE_SIZE_LIMIT_MB * 1024 * 1024,
         on_upload_complete=on_upload_complete,
         auth=get_current_user,

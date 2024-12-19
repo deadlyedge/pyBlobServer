@@ -1,5 +1,6 @@
 from tortoise import fields, models
 
+
 class UsersInfo(models.Model):
     user = fields.CharField(max_length=255, primary_key=True)
     token = fields.CharField(max_length=255, db_index=True)  # Added index
@@ -25,6 +26,7 @@ class FileInfo(models.Model):
         "models.UsersInfo", related_name="files", db_index=True
     )
     file_name = fields.CharField(max_length=255)
+    file_type = fields.CharField(max_length=255, default="")
     file_size = fields.IntField()
     upload_at = fields.DatetimeField(auto_now_add=True)
     download_times = fields.IntField(default=0)
