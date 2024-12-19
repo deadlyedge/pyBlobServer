@@ -1,42 +1,75 @@
 # pyBlobServer
 
-A simple and efficient file server API built with Python, FastAPI, and Tortoise ORM.
+A simple and efficient file server API built with Python, FastAPI, 
+and Tortoise ORM.
 
 ## Overview
 
-pyBlobServer is a lightweight and secure file server API that allows users to upload, download, and manage files, it could support especially a frontend developer with a simple api interface.  It provides user authentication, file statistics tracking, cleanup of expired files, rate limiting, and detailed logging.
+pyBlobServer is a lightweight and secure file server API that allows 
+users to upload, download, and manage files, it could support especially a 
+frontend developer with a simple api interface.  It provides user 
+authentication, file statistics tracking, cleanup of expired files, rate 
+limiting, and detailed logging.
 
-This project should be deploy on a vps server with a public IP address, and it should be accessible from the internet. If you want to deploy it on a local machine, you should use a service like [ngrok](https://ngrok.com/) to expose your local server to the internet.
+This project should be deploy on a vps server with a public IP address, and it 
+should be accessible from the internet. If you want to deploy it on a local 
+machine, you should use a service like [ngrok](https://ngrok.com/) to expose 
+your local server to the internet.
 
-This project is NOT aiming to be a full-featured file server, if you need some more performence, you should try some paid blob services, Amazon, Vercel, or Uploadthing have a free plan.
+This project is NOT aiming to be a full-featured file server, if you need some 
+more performence, you should try some paid blob services, Amazon, Vercel, or 
+Uploadthing have a free plan.
 
-Or you just want to transfer files, in that case, [FilePizza](https://github.com/kernc/filepizza) or [File.io](https://file.io/) maybe better.
+Or you just want to transfer files, in that case, [FilePizza](https://github.com/kernc/filepizza) 
+or [File.io](https://file.io/) maybe better.
 
-Anyway, this project is just for fun and learning, so please don't use it in production, and don't expect it to be stable.  In my opinion, it's best for store some picutres or files for a personal website, or a small team, small project, because without a CDN and some chunk technoligy, it's not suitable for large files or high traffic. and I made a little [frontend UI](https://github.com/deadlyedge/blob-server-ui-next) for it, you could use it as a reference, or just use it directly, it's very simple and easy to use, and it's also open source.
+Anyway, this project is just for fun and learning, so please don't use it in 
+production, and don't expect it to be stable.  In my opinion, it's best for 
+store some picutres or files for a personal website, or a small team, small 
+project, because without a CDN and some chunk technoligy, it's not suitable 
+for large files or high traffic. and I made a little [frontend UI](https://github.com/deadlyedge/blob-server-ui-next) 
+for it, you could use it as a reference, or just use it directly, it's very 
+simple and easy to use, and it's also open source.
 
-This two project working together for just one goal: Make your VPS investment worthy.
+This two project working together for just one goal: 
+>Make your VPS investment worthy.
 
-
-As a hobby programer, I learn programing just for fun and buy a VPS just for show off, or at least at the beginning.  And then I found if I want to safe my files for some more show offs, I can't, I need to pay more for some blob services again.  So I'm very angry and I have to write something to get back my control.
+As a hobby programer, I learn programing just for fun and buy a VPS just for 
+show off, or at least at the beginning.  And then I found if I want to safe my 
+files for some more show offs, I can't, I need to pay more for some blob 
+services again.  So I'm very angry and I have to write something to get back my 
+control.
 
 And when I did, I found something fun from it.
 
 So here we are.
 
-This project is not finished but very usable, just for some funciton not finished yet.  But I expect it will save your cost in the future but it's all depends on the project you want to host.
+This project is not finished but very usable, just for some funciton not 
+finished yet.  But I expect it will save your cost in the future but it's all 
+depends on the project you want to host.
 
 Still, you can consider this is public beta, have some fun!
 
-During my coding works, AI did 80% works somehow, I just drink some coffee and do minor adjustments.  It's amazing.  Time's changed,
-people can now do only thinking works, and left 80% for AI.  Pretty cool!
+During my coding works, AI did 80% works somehow, I just drink some coffee and 
+do minor adjustments.  It's amazing.  Time's changed, people can now do only 
+thinking works, and left 80% for AI.  Pretty cool!
+
+## About Tus
+
+the Tus part is from [edihasaj/tuspy-fast-api](https://github.com/edihasaj/tuspy-fast-api), 
+I forked it and made some adjustments to fit my needs.  I love Tus ideas, but 
+they are not aiming python obviously, for their python community is very 
+quiet.  I don't know why, maybe people nowadays rely on social apps for 
+everything and don't need to upload anything any more.  Except me, I might too 
+old for that, and I'm chinese, so I definitely need some upload tools ;)
 
 ## Features
 
-- 🚀 Fast file upload and download
+- 🚀 Multi-Function file upload and download
 - 🔐 User authentication with token-based security
 - 📊 File and user statistics tracking
 - 💾 Automatic file size limits and quota management
-- 🗑️ Automatic cleanup of expired files
+- ~~🗑️ Automatic cleanup of expired files~~ not yet
 - 🎯 Rate limiting to prevent abuse
 - 📝 Detailed logging of all operations
 
@@ -75,7 +108,8 @@ uvicorn app.main:app --reload
 
 ### Authentication
 
-All endpoints (except `/health` and `/s/file_id`) require Bearer token authentication. Include the token in the Authorization header:
+All endpoints (except `/health` and `/s/file_id`) require Bearer token 
+authentication. Include the token in the Authorization header:
 ```
 Authorization: Bearer <user_token>
 ```
@@ -85,10 +119,18 @@ Authorization: Bearer <user_token>
 #### User Management
 
 ##### GET `/user/{user_id}`
-Get user information and statistics.
+Get user information and statistics.  New user in `ALLOWED_USERS` list could 
+gain their token from this endpoint, but only for the first time, if they 
+contact this route again, the token shall be hidden.  if any of users lost 
+their token, the system must be shut down and get their token back by download 
+and view the sqlite db file `./uploads/blobserver.db` and view `token` column 
+in user table.
+
 - Query Parameters:
   - `function`: Optional. Set to "change_token" to generate a new token
-- Response: User details including storage usage but token hidden, token will not shown again for security reasons, but you could change it by using `function=change_token`.
+- Response: User details including storage usage but token hidden, token will 
+  not shown again for security reasons, but you could change it by using 
+  `function=change_token`.
 
 #### File Operations
 
@@ -196,7 +238,8 @@ pytest
 docker build -t pyblobserver .
 docker run -p 8000:8000 pyblobserver
 ```
-or, here's a docker-compose.example.yml file for you to use, you could change the port and volume path to your own.
+or, here's a docker-compose.example.yml file for you to use, you could change 
+the port and volume path to your own.
 
 ## License
 
@@ -216,5 +259,5 @@ MIT License
 - ~~add batch upload functionality and if any of files failed, return status code of 207.~~
 - do more testing on every api endpoints
 - ~~think of do something like tus protocal do, they're good on something but bad to make them happen, sadly.~~
-- add tus protocal to upload function, by uppy lib.
+- ~~add tus protocal to upload function, by uppy lib.~~
 - add upload function switch to ui.
