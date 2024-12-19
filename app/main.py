@@ -86,7 +86,9 @@ if not ENV.ALLOWED_USERS:
 async def database_connect():
     # Configure database with connection pooling
     await Tortoise.init(
-        db_url=ENV.DATABASE_URL, modules={"models": ["app.models.database_models"]}, _create_db=True
+        db_url=ENV.DATABASE_URL,
+        modules={"models": ["app.models.database_models"]},
+        _create_db=True,
     )
     await Tortoise.generate_schemas()
 
@@ -302,17 +304,17 @@ async def health():
     return JSONResponse({"status": "ok"}, status_code=200)
 
 
-@app.post("/chunked_upload")
-async def chunked_upload(
-    request: Request,
-    current_user: UsersInfo = Depends(get_current_user),
-):
-    try:
-        result = await FileStorage(current_user.user).save_chunk(request)
-        return JSONResponse(result, status_code=200)
-    except Exception as e:
-        logger.error(f"Error during chunked upload: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+# @app.post("/chunked_upload")
+# async def chunked_upload(
+#     request: Request,
+#     current_user: UsersInfo = Depends(get_current_user),
+# ):
+#     try:
+#         result = await FileStorage(current_user.user).save_chunk(request)
+#         return JSONResponse(result, status_code=200)
+#     except Exception as e:
+#         logger.error(f"Error during chunked upload: {e}")
+#         return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.websocket("/upload")
