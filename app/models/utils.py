@@ -1,6 +1,9 @@
 import datetime
+import secrets
+
 from pendulum import instance, timezone
 from tortoise import models
+
 
 def json_datetime_convert(data) -> dict:
     tz = timezone("Asia/Hong_Kong")
@@ -19,3 +22,8 @@ def json_datetime_convert(data) -> dict:
             data[key] = json_datetime_convert(value)
 
     return data
+
+
+def generate_random_string(length: int) -> str:
+    pool = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnprstuvwxyz2345678"
+    return "".join(secrets.choice(pool) for _ in range(length))

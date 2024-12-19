@@ -1,31 +1,36 @@
 import asyncio
 import os
-import secrets
-from urllib.parse import unquote
 import aiofiles
-from fastapi import HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
-from typing import Literal, Optional
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from loguru import logger
 import pendulum
+
+from urllib.parse import unquote
+from fastapi import (
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from typing import List, Literal, Optional
+from loguru import logger
+
 from tortoise import timezone as tz
 from tortoise.transactions import in_transaction
 from tortoise.exceptions import DoesNotExist
 
-from .utils import json_datetime_convert
-from .user_models import UsersInfo, FileInfo
+from .cache import cache_result
+from .utils import json_datetime_convert, generate_random_string
+from .database_models import UsersInfo, FileInfo
 from .env import ENV
+
 
 class FileStorage:
     def __init__(self, user: str = ""):
         self.folder = os.path.join(ENV.BASE_FOLDER, user)
         os.makedirs(self.folder, exist_ok=True)
         self.user = user
-
-    @staticmethod
-    def _generate_random_string(length: int) -> str:
-        pool = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnprstuvwxyz2345678"
-        return "".join(secrets.choice(pool) for _ in range(length))
 
     async def _validate_file_size(self, file: UploadFile):
         if not hasattr(file, "size"):
@@ -130,6 +135,7 @@ class FileStorage:
         except Exception as e:
             logger.error(f"Error saving file info: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
+
     async def _save_file_info_socket(self, file_id: str, filename: str, file_size: int):
         try:
             await FileInfo.create(
@@ -156,10 +162,25 @@ class FileStorage:
             logger.error(f"Error saving file info chunk: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
+    @cache_result(ttl=60)  # Cache for 1 minute
+    async def get_files_info_list(self) -> List[dict]:
+        try:
+            files = (
+                await FileInfo.filter(user=await UsersInfo.get(user=self.user))
+                .prefetch_related("user")
+                .all()
+            )
+            return [json_datetime_convert(f) for f in files]
+        except DoesNotExist:
+            return []
+        except Exception as e:
+            logger.error(f"Error loading file info: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
     async def save_file(self, file: UploadFile) -> dict:
         try:
             await self._validate_file_size(file)
-            file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+            file_id = generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
             file_path = self._get_file_path(file_id)
             self._write_file(file, file_path)
             await self._save_file_info(file_id, file)
@@ -184,7 +205,7 @@ class FileStorage:
         try:
             while True:
                 file_name = await websocket.receive_text()  # Receive the file name
-                file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+                file_id = generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
                 file_path = self._get_file_path(file_id)
                 with open(file_path, "wb") as file:
                     try:
@@ -209,7 +230,7 @@ class FileStorage:
             logger.error(f"Error saving file: {e}")
 
     async def save_chunk(self, request: Request):
-        file_id = self._generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
+        file_id = generate_random_string(ENV.DEFAULT_SHORT_PATH_LENGTH)
         file_path = self._get_file_path(file_id)
         try:
             filename = request.headers.get("filename", "unknown")

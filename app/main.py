@@ -27,12 +27,11 @@ from loguru import logger
 from tortoise import Tortoise
 from tortoise.exceptions import DoesNotExist
 
-from app.models import (
-    ENV,
-    UsersInfo,
-    UserManager,
-    FileStorage,
-)
+from app.models.env import ENV
+from app.models.database_models import UsersInfo
+from app.models.user_manager import UserManager
+from app.models.file_storage import FileStorage
+
 
 load_dotenv()
 
@@ -87,7 +86,7 @@ if not ENV.ALLOWED_USERS:
 async def database_connect():
     # Configure database with connection pooling
     await Tortoise.init(
-        db_url=ENV.DATABASE_URL, modules={"models": ["app.models"]}, _create_db=True
+        db_url=ENV.DATABASE_URL, modules={"models": ["app.models.database_models"]}, _create_db=True
     )
     await Tortoise.generate_schemas()
 

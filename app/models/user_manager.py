@@ -1,29 +1,13 @@
 import uuid
-import functools
+
 from fastapi import HTTPException
 from loguru import logger
-from .user_models import UsersInfo
-from .cache import Cache
-from .env import ENV
 from tortoise.exceptions import DoesNotExist
+
+from .database_models import UsersInfo
+from .cache import cache_result, _cache
 from .utils import json_datetime_convert
 
-
-_cache = Cache()
-
-def cache_result(ttl: int = ENV.CACHE_TTL):
-    def decorator(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            cache_key = f"{func.__name__}:{str(args)}:{str(kwargs)}"
-            result = _cache.get(cache_key)
-            if result is not None:
-                return result
-            result = await func(*args, **kwargs)
-            _cache.set(cache_key, result)
-            return result
-        return wrapper
-    return decorator
 
 class UserManager:
     def __init__(self, user_id: str):

@@ -1,6 +1,7 @@
 import os
 from typing import List
 
+
 class ENV:
     SECRET_KEY: str = os.getenv("SECRET_KEY", "secret_key")
     BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
