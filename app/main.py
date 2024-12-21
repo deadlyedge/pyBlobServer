@@ -141,16 +141,31 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ENV.ALLOWED_ORIGINS if hasattr(ENV, "ALLOWED_ORIGINS") else ["*"],
     allow_credentials=True,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE",
-        "HEAD",
-        "OPTIONS",
-        "PATCH",
-    ],  # xdream note: updated to include all methods
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=[
+        "Location",
+        "X-Filename",
+        "Tus-Resumable",
+        "Tus-Extension",
+        "Tus-Version",
+        "Tus-Max-Size",
+        "Upload-Expires",
+        "Upload-Metadata",
+        "Upload-Offset",
+        "Upload-Length",
+    ],
+    expose_headers=[
+        "Location",
+        "X-Filename",
+        "Tus-Resumable",
+        "Tus-Extension",
+        "Tus-Version",
+        "Tus-Max-Size",
+        "Upload-Expires",
+        "Upload-Metadata",
+        "Upload-Offset",
+        "Upload-Length",
+    ],
     max_age=3600,
 )
 
@@ -230,39 +245,6 @@ async def get_file(file_id: str, output: str = "file"):
     return await FileStorage().get_file(file_id, output)
 
 
-@app.post("/batch_upload")
-async def batch_upload_file(
-    files: List[UploadFile] = [File(...)],
-    current_user=Depends(get_current_user),
-):
-    resaults = []
-    for file in files:
-        try:
-            resaults.append(await FileStorage(current_user.user).save_file(file))
-        except Exception as e:
-            logger.error(f"Error uploading file: {e}")
-            resaults.append(e)
-
-    return JSONResponse(
-        resaults,
-        status_code=status.HTTP_207_MULTI_STATUS
-        if any("status_code" in resault for resault in resaults)
-        else status.HTTP_200_OK,
-    )
-
-
-@app.post("/upload")
-async def upload_file(
-    request: Request,
-    file: UploadFile = File(...),
-    current_user=Depends(get_current_user),
-):
-    return JSONResponse(
-        await FileStorage(current_user.user).save_file(file),
-        status_code=200,
-    )
-
-
 @app.get("/list")
 async def list_files(current_user=Depends(get_current_user)):
     return JSONResponse(
@@ -310,12 +292,41 @@ async def delete_all(
     return await FileStorage(current_user.user).batch_delete(function)
 
 
-@app.get("/health")
-async def health():
-    return JSONResponse({"status": "ok"}, status_code=200)
+# very basic upload
+@app.post("/upload")
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+):
+    return JSONResponse(
+        await FileStorage(current_user.user).save_file(file),
+        status_code=200,
+    )
 
 
-@app.websocket("/upload")
+@app.post("/upload_batch")
+async def batch_upload_file(
+    files: List[UploadFile] = [File(...)],
+    current_user=Depends(get_current_user),
+):
+    resaults = []
+    for file in files:
+        try:
+            resaults.append(await FileStorage(current_user.user).save_file(file))
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}")
+            resaults.append(e)
+
+    return JSONResponse(
+        resaults,
+        status_code=status.HTTP_207_MULTI_STATUS
+        if any("status_code" in resault for resault in resaults)
+        else status.HTTP_200_OK,
+    )
+
+
+@app.websocket("/upload_socket")
 async def websocket_upload_file(websocket: WebSocket):
     await websocket.accept()
 
@@ -360,6 +371,12 @@ app.include_router(
         prefix="upload_tus",
     ),
 )
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok"}, status_code=200)
+
 
 if __name__ == "__main__":
     import uvicorn

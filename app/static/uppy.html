@@ -26,13 +26,13 @@
         .use(Tus, {
           endpoint: "http://127.0.0.1:8000/upload_tus",
           headers: {
-            authorization: "Bearer edca09f1-476b-477f-b65d-92d203d854ae",
+            authorization: "Bearer 48a28456-3d9a-4e4d-bee7-9d136a5e7999",
           },
         })
 
       uppy.on("complete", (result) => {
         console.log(
-          "Upload complete! We’ve uploaded these files:",
+          "Upload complete! We've uploaded these files:",
           result.successful
         )
       })
